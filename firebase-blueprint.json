@@ -1,0 +1,445 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "사용자 프로필 정보",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "사용자 고유 UID" },
+        "email": { "type": "string", "format": "email", "description": "사용자 이메일 주소" },
+        "displayName": { "type": "string", "maxLength": 50, "description": "사용자 닉네임" },
+        "photoURL": { "type": "string", "description": "프로필 이미지 URL" },
+        "role": { "type": "string", "enum": ["user", "vip", "admin"], "description": "사용자 권한 역할" },
+        "createdAt": { "type": "string", "description": "계정 생성 일시" },
+        "lastLoginAt": { "type": "string", "description": "최근 로그인 일시" },
+        "status": { "type": "string", "enum": ["active", "suspended", "deleted"], "description": "계정 상태" }
+      },
+      "required": ["uid", "email", "displayName", "role", "createdAt", "status"]
+    },
+    "Stock": {
+      "title": "Stock",
+      "description": "국내 주식 종목 메타데이터",
+      "type": "object",
+      "properties": {
+        "symbol": { "type": "string", "pattern": "^[0-9]{6}$", "description": "6자리 종목 코드" },
+        "name": { "type": "string", "maxLength": 50, "description": "종목 한글명" },
+        "market": { "type": "string", "enum": ["KOSPI", "KOSDAQ"], "description": "상장 시장" },
+        "sector": { "type": "string", "maxLength": 50, "description": "업종 섹터" },
+        "isActive": { "type": "boolean", "description": "거래 활성화 여부" }
+      },
+      "required": ["symbol", "name", "market", "sector", "isActive"]
+    },
+    "Watchlist": {
+      "title": "Watchlist",
+      "description": "사용자 관심종목",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "사용자 UID" },
+        "symbol": { "type": "string", "pattern": "^[0-9]{6}$", "description": "관심 종목 코드" },
+        "orderIndex": { "type": "number", "description": "정렬 순서" },
+        "createdAt": { "type": "string", "description": "등록 일시" }
+      },
+      "required": ["uid", "symbol", "createdAt"]
+    },
+    "Post": {
+      "title": "Post",
+      "description": "커뮤니티 게시글",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "게시글 ID" },
+        "authorId": { "type": "string", "description": "작성자 UID" },
+        "authorName": { "type": "string", "description": "작성자 닉네임" },
+        "authorAvatar": { "type": "string", "description": "작성자 아바타" },
+        "authorBadge": { "type": "string", "description": "작성자 등급 배지" },
+        "category": { "type": "string", "enum": ["free", "discussion", "market", "invest", "qa", "notice"], "description": "게시판 분류" },
+        "title": { "type": "string", "maxLength": 200, "description": "글 제목" },
+        "content": { "type": "string", "maxLength": 10000, "description": "글 본문" },
+        "stockSymbol": { "type": "string", "description": "연관 종목 코드" },
+        "stockName": { "type": "string", "description": "연관 종목명" },
+        "viewCount": { "type": "number", "description": "조회수" },
+        "likeCount": { "type": "number", "description": "추천수" },
+        "likedBy": { "type": "array", "items": { "type": "string" }, "description": "추천한 사용자 UID 목록" },
+        "commentCount": { "type": "number", "description": "댓글 수" },
+        "createdAt": { "type": "string", "description": "작성 일시" },
+        "updatedAt": { "type": "string", "description": "수정 일시" },
+        "status": { "type": "string", "enum": ["published", "hidden", "deleted"], "description": "게시 상태" }
+      },
+      "required": ["id", "authorId", "category", "title", "content", "viewCount", "likeCount", "commentCount", "createdAt", "status"]
+    },
+    "Comment": {
+      "title": "Comment",
+      "description": "게시글 댓글",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "댓글 ID" },
+        "postId": { "type": "string", "description": "연관 게시글 ID" },
+        "authorId": { "type": "string", "description": "댓글 작성자 UID" },
+        "content": { "type": "string", "maxLength": 1000, "description": "댓글 본문" },
+        "createdAt": { "type": "string", "description": "작성 일시" },
+        "updatedAt": { "type": "string", "description": "수정 일시" },
+        "status": { "type": "string", "enum": ["published", "deleted"], "description": "댓글 상태" }
+      },
+      "required": ["id", "postId", "authorId", "content", "createdAt", "status"]
+    },
+    "ChatRoom": {
+      "title": "ChatRoom",
+      "description": "실시간 채팅방",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "채팅방 ID" },
+        "name": { "type": "string", "maxLength": 100, "description": "채팅방 이름" },
+        "type": { "type": "string", "enum": ["lounge", "market", "stock"], "description": "채팅방 종류" },
+        "createdAt": { "type": "string", "description": "생성 일시" }
+      },
+      "required": ["id", "name", "type", "createdAt"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "실시간 채팅 메시지",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "메시지 ID" },
+        "roomId": { "type": "string", "description": "소속 채팅방 ID" },
+        "authorId": { "type": "string", "description": "작성자 UID" },
+        "authorName": { "type": "string", "description": "작성자 닉네임" },
+        "authorAvatar": { "type": "string", "description": "작성자 아바타" },
+        "authorRole": { "type": "string", "description": "작성자 역할" },
+        "content": { "type": "string", "maxLength": 1000, "description": "메시지 본문" },
+        "sentiment": { "type": "string", "enum": ["bull", "bear", "neutral"], "description": "투자 심리" },
+        "createdAt": { "type": "string", "description": "전송 일시" },
+        "status": { "type": "string", "enum": ["active", "deleted"], "description": "메시지 상태" }
+      },
+      "required": ["id", "roomId", "authorId", "content", "createdAt", "status"]
+    },
+    "ChatRestriction": {
+      "title": "ChatRestriction",
+      "description": "채팅 제한 (뮤트/차단) 사용자",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "제한 대상 사용자 UID" },
+        "reason": { "type": "string", "description": "제한 사유" },
+        "restrictedBy": { "type": "string", "description": "제한 조치한 관리자 UID" },
+        "createdAt": { "type": "string", "description": "제한 일시" }
+      },
+      "required": ["uid", "reason", "restrictedBy", "createdAt"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "사용자 인앱 알림",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "알림 ID" },
+        "uid": { "type": "string", "description": "수신 사용자 UID" },
+        "type": { "type": "string", "description": "알림 유형 (price_rise, price_fall, volume_spike, trading_value_spike, related_news, market_event, system)" },
+        "title": { "type": "string", "maxLength": 100, "description": "알림 제목" },
+        "message": { "type": "string", "maxLength": 500, "description": "알림 내용" },
+        "stockSymbol": { "type": "string", "description": "관련 종목 코드" },
+        "stockName": { "type": "string", "description": "관련 종목 한글명" },
+        "targetType": { "type": "string", "description": "이동 대상 종류 (stock, market)" },
+        "read": { "type": "boolean", "description": "읽음 여부" },
+        "createdAt": { "type": "string", "description": "발송 일시" }
+      },
+      "required": ["id", "uid", "type", "title", "message", "read", "createdAt"]
+    },
+    "Alert": {
+      "title": "Alert",
+      "description": "사용자 주가 목표 알림 조건",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "알림 조건 ID" },
+        "uid": { "type": "string", "description": "설정한 사용자 UID" },
+        "symbol": { "type": "string", "description": "대상 종목 코드" },
+        "symbolName": { "type": "string", "description": "대상 종목 한글명" },
+        "type": { "type": "string", "description": "알림 감지 유형 (price_rise, price_fall, volume_spike, trading_value_spike, related_news, market_event)" },
+        "condition": { "type": "string", "description": "감지 조건 (above, below, event)" },
+        "value": { "type": "number", "description": "목표 기준 가격/수치" },
+        "enabled": { "type": "boolean", "description": "알림 활성화 여부" },
+        "createdAt": { "type": "string", "description": "설정 일시" }
+      },
+      "required": ["id", "uid", "symbol", "type", "value", "enabled", "createdAt"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "불법 게시글/댓글 신고",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "신고 건 ID" },
+        "reporterId": { "type": "string", "description": "신고자 UID" },
+        "targetType": { "type": "string", "enum": ["post", "comment", "user"], "description": "신고 대상 종류" },
+        "targetId": { "type": "string", "description": "신고 대상 ID" },
+        "reason": { "type": "string", "maxLength": 500, "description": "신고 사유" },
+        "status": { "type": "string", "enum": ["pending", "resolved", "dismissed"], "description": "처리 상태" },
+        "createdAt": { "type": "string", "description": "신고 일시" }
+      },
+      "required": ["id", "reporterId", "targetType", "targetId", "reason", "status", "createdAt"]
+    },
+    "News": {
+      "title": "News",
+      "description": "증시 뉴스 및 공시 기사",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "뉴스 ID" },
+        "title": { "type": "string", "maxLength": 200, "description": "기사 제목" },
+        "url": { "type": "string", "description": "원문 링크" },
+        "source": { "type": "string", "maxLength": 50, "description": "언론사 출처" },
+        "publishedAt": { "type": "string", "description": "발행 일시" },
+        "relatedStocks": { "type": "string", "description": "관련 종목 코드 목록 (쉼표 구분)" }
+      },
+      "required": ["id", "title", "url", "source", "publishedAt"]
+    },
+    "Notice": {
+      "title": "Notice",
+      "description": "공지사항",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "공지사항 ID" },
+        "title": { "type": "string", "maxLength": 200, "description": "공지 제목" },
+        "content": { "type": "string", "maxLength": 10000, "description": "공지 내용" },
+        "author": { "type": "string", "description": "작성자명" },
+        "authorId": { "type": "string", "description": "작성자 UID" },
+        "isPinned": { "type": "boolean", "description": "상단 고정 여부" },
+        "category": { "type": "string", "enum": ["system", "event", "service", "maintenance"], "description": "공지 분류" },
+        "viewCount": { "type": "number", "description": "조회수" },
+        "createdAt": { "type": "string", "description": "등록 일시" }
+      },
+      "required": ["id", "title", "content", "author", "createdAt"]
+    },
+    "BannedWord": {
+      "title": "BannedWord",
+      "description": "채팅 및 커뮤니티 금칙어",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "금칙어 ID" },
+        "word": { "type": "string", "maxLength": 50, "description": "금지 단어" },
+        "reason": { "type": "string", "maxLength": 200, "description": "차단 사유" },
+        "severity": { "type": "string", "enum": ["warning", "block", "mute"], "description": "제재 강도" },
+        "addedBy": { "type": "string", "description": "등록 관리자" },
+        "createdAt": { "type": "string", "description": "등록 일시" }
+      },
+      "required": ["id", "word", "createdAt"]
+    },
+    "SystemMetric": {
+      "title": "SystemMetric",
+      "description": "시스템 상태 모니터링 메트릭",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "메트릭 레코드 ID" },
+        "cpuUsage": { "type": "number", "description": "CPU 사용률 (%)" },
+        "memoryUsage": { "type": "number", "description": "메모리 사용률 (%)" },
+        "activeConnections": { "type": "number", "description": "동시 접속자 수" },
+        "apiRequestsPerSec": { "type": "number", "description": "초당 API 요청 수" },
+        "status": { "type": "string", "enum": ["HEALTHY", "DEGRADED", "CRITICAL"], "description": "시스템 전체 상태" },
+        "timestamp": { "type": "string", "description": "기록 일시" }
+      },
+      "required": ["id", "cpuUsage", "memoryUsage", "timestamp"]
+    },
+    "VirtualHolding": {
+      "title": "VirtualHolding",
+      "description": "사용자 직접 입력 가상 보유 종목 내역",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "보유 레코드 ID" },
+        "uid": { "type": "string", "description": "사용자 UID" },
+        "symbol": { "type": "string", "description": "종목 코드" },
+        "name": { "type": "string", "maxLength": 100, "description": "종목명" },
+        "market": { "type": "string", "description": "상장 시장 (KOSPI, KOSDAQ, US 등)" },
+        "currency": { "type": "string", "enum": ["KRW", "USD"], "description": "기준 통화" },
+        "quantity": { "type": "number", "description": "총 보유 수량" },
+        "avgBuyPrice": { "type": "number", "description": "평균 매입 단가" },
+        "totalBuyAmount": { "type": "number", "description": "총 매입 금액" },
+        "buyDate": { "type": "string", "description": "최초 매수 일자" },
+        "memo": { "type": "string", "maxLength": 500, "description": "투자 메모" },
+        "createdAt": { "type": "string", "description": "등록 일시" },
+        "updatedAt": { "type": "string", "description": "수정 일시" }
+      },
+      "required": ["id", "uid", "symbol", "name", "quantity", "avgBuyPrice", "createdAt", "updatedAt"]
+    },
+    "VirtualHoldingTrade": {
+      "title": "VirtualHoldingTrade",
+      "description": "가상 보유 종목 거래 및 매도 실현 내역",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "거래 레코드 ID" },
+        "uid": { "type": "string", "description": "사용자 UID" },
+        "holdingId": { "type": "string", "description": "연관 보유 종목 ID" },
+        "symbol": { "type": "string", "description": "종목 코드" },
+        "name": { "type": "string", "description": "종목명" },
+        "tradeType": { "type": "string", "enum": ["BUY", "ADD_BUY", "SELL"], "description": "거래 유형" },
+        "price": { "type": "number", "description": "체결 단가" },
+        "quantity": { "type": "number", "description": "체결 수량" },
+        "totalAmount": { "type": "number", "description": "체결 총액" },
+        "tradeDate": { "type": "string", "description": "거래 일자" },
+        "realizedProfit": { "type": "number", "description": "매도시 실현 손익" },
+        "realizedProfitRate": { "type": "number", "description": "매도시 실현 수익률 (%)" },
+        "fee": { "type": "number", "description": "수수료" },
+        "tax": { "type": "number", "description": "제세금" },
+        "memo": { "type": "string", "maxLength": 500, "description": "매매 사유 메모" },
+        "createdAt": { "type": "string", "description": "등록 일시" }
+      },
+      "required": ["id", "uid", "symbol", "name", "tradeType", "price", "quantity", "createdAt"]
+    },
+    "MockAccount": {
+      "title": "MockAccount",
+      "description": "모의 투자 가상 계좌 및 자산 설정",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "사용자 UID" },
+        "initialBalance": { "type": "number", "description": "초기 가상 자금" },
+        "currentCash": { "type": "number", "description": "보유 현금/예수금" },
+        "commissionRate": { "type": "number", "description": "매매 수수료율" },
+        "taxRate": { "type": "number", "description": "매도 증권거래세율" },
+        "createdAt": { "type": "string", "description": "계좌 개설 일시" },
+        "updatedAt": { "type": "string", "description": "최근 갱신 일시" }
+      },
+      "required": ["uid", "initialBalance", "currentCash", "commissionRate", "taxRate", "createdAt", "updatedAt"]
+    },
+    "MockHolding": {
+      "title": "MockHolding",
+      "description": "모의 투자 보유 종목 포지션",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "포지션 ID" },
+        "uid": { "type": "string", "description": "사용자 UID" },
+        "symbol": { "type": "string", "description": "종목 코드" },
+        "name": { "type": "string", "description": "종목명" },
+        "market": { "type": "string", "description": "상장 시장" },
+        "currency": { "type": "string", "enum": ["KRW", "USD"], "description": "기준 통화" },
+        "quantity": { "type": "number", "description": "보유 수량" },
+        "avgBuyPrice": { "type": "number", "description": "평균 매입 단가" },
+        "totalInvested": { "type": "number", "description": "총 투자 금액" },
+        "updatedAt": { "type": "string", "description": "갱신 일시" }
+      },
+      "required": ["id", "uid", "symbol", "name", "quantity", "avgBuyPrice", "updatedAt"]
+    },
+    "MockOrder": {
+      "title": "MockOrder",
+      "description": "모의 투자 매수/매도 주문 체결 기록",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "주문 체결 ID" },
+        "uid": { "type": "string", "description": "사용자 UID" },
+        "symbol": { "type": "string", "description": "종목 코드" },
+        "name": { "type": "string", "description": "종목명" },
+        "orderType": { "type": "string", "enum": ["BUY", "SELL"], "description": "주문 유형" },
+        "price": { "type": "number", "description": "체결 가격" },
+        "quantity": { "type": "number", "description": "체결 수량" },
+        "totalAmount": { "type": "number", "description": "거래 대금" },
+        "fee": { "type": "number", "description": "수수료" },
+        "tax": { "type": "number", "description": "거래세" },
+        "settledAmount": { "type": "number", "description": "정산 금액" },
+        "realizedProfit": { "type": "number", "description": "실현 손익" },
+        "realizedProfitRate": { "type": "number", "description": "실현 수익률 (%)" },
+        "reason": { "type": "string", "maxLength": 500, "description": "매매 사유" },
+        "executedAt": { "type": "string", "description": "체결 일시" },
+        "currency": { "type": "string", "enum": ["KRW", "USD"], "description": "통화" }
+      },
+      "required": ["id", "uid", "symbol", "name", "orderType", "price", "quantity", "executedAt"]
+    },
+    "HistoricalSimulation": {
+      "title": "HistoricalSimulation",
+      "description": "과거 차트 매매 시뮬레이션 및 시나리오 분석 기록",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "시뮬레이션 기록 ID" },
+        "uid": { "type": "string", "description": "사용자 UID" },
+        "symbol": { "type": "string", "description": "종목 코드" },
+        "stockName": { "type": "string", "description": "종목명" },
+        "market": { "type": "string", "description": "상장 시장" },
+        "entryDate": { "type": "string", "description": "진입 날짜" },
+        "entryPrice": { "type": "number", "description": "진입 단가" },
+        "quantity": { "type": "number", "description": "매수 수량" },
+        "totalInvestment": { "type": "number", "description": "총 투자 금액" },
+        "selectedExitDate": { "type": "string", "description": "선택된 매도 일자" },
+        "selectedExitPrice": { "type": "number", "description": "선택된 매도 단가" },
+        "netProfit": { "type": "number", "description": "순손익" },
+        "returnRate": { "type": "number", "description": "수익률 (%)" },
+        "holdingDays": { "type": "number", "description": "보유 일수" },
+        "notes": { "type": "string", "description": "전략 메모" },
+        "createdAt": { "type": "string", "description": "시뮬레이션 생성 일시" }
+      },
+      "required": ["id", "uid", "symbol", "stockName", "entryDate", "entryPrice", "quantity", "totalInvestment", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "User",
+      "description": "사용자 프로필 컬렉션"
+    },
+    "/stocks/{symbol}": {
+      "schema": "Stock",
+      "description": "상장 주식 종목 메타데이터"
+    },
+    "/watchlists/{watchlistId}": {
+      "schema": "Watchlist",
+      "description": "사용자 관심종목 컬렉션"
+    },
+    "/posts/{postId}": {
+      "schema": "Post",
+      "description": "커뮤니티 게시글 컬렉션"
+    },
+    "/comments/{commentId}": {
+      "schema": "Comment",
+      "description": "게시글 댓글 컬렉션"
+    },
+    "/chatRooms/{roomId}": {
+      "schema": "ChatRoom",
+      "description": "실시간 채팅방 목록"
+    },
+    "/chatMessages/{messageId}": {
+      "schema": "ChatMessage",
+      "description": "실시간 채팅 메시지 컬렉션"
+    },
+    "/notifications/{notificationId}": {
+      "schema": "Notification",
+      "description": "사용자별 알림 컬렉션"
+    },
+    "/alerts/{alertId}": {
+      "schema": "Alert",
+      "description": "사용자 주가 목표 알림 조건 컬렉션"
+    },
+    "/virtualHoldings/{holdingId}": {
+      "schema": "VirtualHolding",
+      "description": "사용자 직접 입력 가상 보유 종목 컬렉션"
+    },
+    "/virtualHoldingHistory/{historyId}": {
+      "schema": "VirtualHoldingTrade",
+      "description": "가상 보유 종목 매수/매도 거래 이력 컬렉션"
+    },
+    "/mockAccounts/{accountId}": {
+      "schema": "MockAccount",
+      "description": "모의 투자 사용자 가상 계좌 컬렉션"
+    },
+    "/mockHoldings/{holdingId}": {
+      "schema": "MockHolding",
+      "description": "모의 투자 보유 종목 포지션 컬렉션"
+    },
+    "/mockOrders/{orderId}": {
+      "schema": "MockOrder",
+      "description": "모의 투자 주문 및 체결 내역 컬렉션"
+    },
+    "/historicalSimulations/{simId}": {
+      "schema": "HistoricalSimulation",
+      "description": "과거 차트 매매 시뮬레이션 기록 컬렉션"
+    },
+    "/reports/{reportId}": {
+      "schema": "Report",
+      "description": "신고 내역 관리 컬렉션"
+    },
+    "/news/{newsId}": {
+      "schema": "News",
+      "description": "시장 뉴스 컬렉션"
+    },
+    "/notices/{noticeId}": {
+      "schema": "Notice",
+      "description": "운영 공지사항 컬렉션"
+    },
+    "/bannedWords/{wordId}": {
+      "schema": "BannedWord",
+      "description": "채팅 및 커뮤니티 금칙어 필터링 컬렉션"
+    },
+    "/systemMetrics/{metricId}": {
+      "schema": "SystemMetric",
+      "description": "시스템 성능 지표 컬렉션"
+    }
+  }
+}

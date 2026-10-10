@@ -1,0 +1,261 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Reusable Security Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // Role-based Access Control: Admin check
+    // 1) Designated root admin email (byunghyunlim92@gmail.com)
+    // 2) Or role in /users/{uid} document is 'admin' or 'superadmin'
+    function isAdmin() {
+      return isSignedIn() && (
+        (request.auth.token.email == 'byunghyunlim92@gmail.com') ||
+        (exists(/databases/{database}/documents/users/$(request.auth.uid)) &&
+         (get(/databases/{database}/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          get(/databases/{database}/documents/users/$(request.auth.uid)).data.role == 'superadmin'))
+      );
+    }
+
+    // 2. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 3. Users Collection
+    // - Profile read: Any authenticated user can read public user profile, or own profile
+    // - Profile create: User can only create their own profile (request.auth.uid == userId)
+    // - Profile update: User can update their own profile, or Admin can update
+    // - Delete: Admin only
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // 4. Stocks Collection (Stock Master Metadata)
+    // - Public read for all users
+    // - Write: Admin only
+    match /stocks/{symbol} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // 5. Watchlists Collection (Per-User Isolation)
+    // Document ID is formatted as `${uid}_${symbol}`
+    // - Read: Only the owner of the watchlist or Admin
+    // - Create/Update: Only if incoming data uid matches request.auth.uid
+    // - Delete: Only if existing document uid matches request.auth.uid or Admin
+    match /watchlists/{watchlistId} {
+      allow read: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && (request.resource.data.uid == request.auth.uid);
+      allow update: if isSignedIn() && (
+        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) || 
+        isAdmin()
+      );
+      allow delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+    }
+
+    // 6. Community Posts Collection
+    // - Read: Public read (all users and visitors can browse community posts)
+    // - Create: Authenticated users can create posts, ensuring authorId matches request.auth.uid
+    // - Update: Author can update their post, or any authenticated user can like/view/comment (updating likeCount/likedBy/viewCount/comments), or Admin
+    // - Delete: Author or Admin
+    match /posts/{postId} {
+      allow read: if true;
+      allow create: if isSignedIn() && request.resource.data.authorId == request.auth.uid;
+      allow update: if isSignedIn() && (
+        resource.data.authorId == request.auth.uid ||
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount', 'likeCount', 'likedBy', 'commentCount', 'comments', 'updatedAt']) ||
+        isAdmin()
+      );
+      allow delete: if isSignedIn() && (resource.data.authorId == request.auth.uid || isAdmin());
+    }
+
+    match /communityPosts/{postId} {
+      allow read: if true;
+      allow create: if isSignedIn() && request.resource.data.authorId == request.auth.uid;
+      allow update: if isSignedIn() && (
+        resource.data.authorId == request.auth.uid ||
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount', 'likeCount', 'likedBy', 'commentCount', 'comments', 'updatedAt']) ||
+        isAdmin()
+      );
+      allow delete: if isSignedIn() && (resource.data.authorId == request.auth.uid || isAdmin());
+    }
+
+    // 7. Comments Subcollection / Collection
+    match /comments/{commentId} {
+      allow read: if true;
+      allow create: if isSignedIn() && request.resource.data.authorId == request.auth.uid;
+      allow update: if isSignedIn() && (resource.data.authorId == request.auth.uid || isAdmin());
+      allow delete: if isSignedIn() && (resource.data.authorId == request.auth.uid || isAdmin());
+    }
+
+    // 8. User Alerts & Price Notifications (Per-User Isolation)
+    // - Read: Only the owner of the alert or Admin
+    // - Create: Only for the authenticated user (uid == request.auth.uid)
+    // - Update: Only for the owner or Admin
+    // - Delete: Only for the owner or Admin
+    match /alerts/{alertId} {
+      allow read: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow update: if isSignedIn() && (
+        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) || 
+        isAdmin()
+      );
+      allow delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+    }
+
+    match /notifications/{notifId} {
+      allow read: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && (request.resource.data.uid == request.auth.uid || isAdmin());
+      allow update: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+    }
+
+    // 9. Realtime Chat Messages & Chat Rooms
+    match /chatRooms/{roomId} {
+      allow read: if true;
+      allow create: if isSignedIn();
+      allow update, delete: if isSignedIn() && (resource.data.creatorId == request.auth.uid || isAdmin());
+    }
+
+    match /chatMessages/{msgId} {
+      allow read: if true;
+      allow create: if isSignedIn() && request.resource.data.authorId == request.auth.uid;
+      allow update: if isSignedIn() && (resource.data.authorId == request.auth.uid || isAdmin());
+      allow delete: if isSignedIn() && (resource.data.authorId == request.auth.uid || isAdmin());
+    }
+
+    // 10. Chat Restrictions & Moderation
+    // - Read: Authenticated users can check restrictions
+    // - Write/Delete: Admin only
+    match /chatRestrictions/{userId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // 11. Reports (Community reports)
+    // - Create: Authenticated users can submit a report
+    // - Read/Update/Delete: Admin only (for moderation review)
+    match /reports/{reportId} {
+      allow create: if isSignedIn() && request.resource.data.reporterId == request.auth.uid;
+      allow read, update, delete: if isAdmin();
+    }
+
+    match /adminReports/{reportId} {
+      allow create: if isSignedIn();
+      allow read, update, delete: if isAdmin();
+    }
+
+    // 12. Notices & News (Admin managed, public read)
+    match /notices/{noticeId} {
+      allow read: if true;
+      allow write, delete: if isAdmin();
+    }
+
+    match /news/{newsId} {
+      allow read: if true;
+      allow write, delete: if isAdmin();
+    }
+
+    // 13. Admin Management Collections
+    match /bannedWords/{wordId} {
+      allow read: if isSignedIn();
+      allow write, delete: if isAdmin();
+    }
+
+    match /filters/{filterId} {
+      allow read: if isSignedIn();
+      allow write, delete: if isAdmin();
+    }
+
+    match /adminLogs/{logId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /adminSettings/{settingId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /adminAlerts/{alertId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /systemMetrics/{metricId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // 14. User FCM Web Push Tokens (Strict Owner-only Isolation)
+    match /users/{userId}/fcmTokens/{tokenId} {
+      allow read, write: if isOwner(userId) || isAdmin();
+    }
+
+    // 15. Virtual Holdings & Trade History (Per-User Isolation)
+    match /virtualHoldings/{holdingId} {
+      allow read, delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow update: if isSignedIn() && (
+        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) ||
+        isAdmin()
+      );
+    }
+
+    match /virtualHoldingHistory/{historyId} {
+      allow read, delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow update: if isSignedIn() && (
+        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) ||
+        isAdmin()
+      );
+    }
+
+    // 16. Mock Trading Accounts & Holdings & Orders (Per-User Isolation)
+    match /mockAccounts/{accountId} {
+      allow read: if isSignedIn() && (resource.data.uid == request.auth.uid || isOwner(accountId) || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow update: if isSignedIn() && (
+        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) ||
+        isAdmin()
+      );
+      allow delete: if isOwner(accountId) || isAdmin();
+    }
+
+    match /mockHoldings/{holdingId} {
+      allow read, delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow update: if isSignedIn() && (
+        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) ||
+        isAdmin()
+      );
+    }
+
+    match /mockOrders/{orderId} {
+      allow read, delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow update: if isSignedIn() && (
+        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) ||
+        isAdmin()
+      );
+    }
+
+    // 17. Historical Chart Trading Simulations (Per-User Isolation)
+    match /historicalSimulations/{simId} {
+      allow read, delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow update: if isSignedIn() && (
+        (resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid) ||
+        isAdmin()
+      );
+    }
+  }
+}

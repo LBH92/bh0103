@@ -1,0 +1,38 @@
+{
+  "backupTimestamp": "2026-10-08T17:53:35.000Z",
+  "environment": "production-prelaunch",
+  "firestoreDatabaseId": "ai-studio-a4bb5224-8774-4d8f-9f3e-12e5750ad18a",
+  "inspectedCollections": {
+    "posts": { "count": 0, "documents": [] },
+    "communityPosts": { "count": 0, "documents": [] },
+    "chatRooms": { "count": 0, "documents": [] },
+    "comments": { "count": 0, "documents": [] },
+    "notices": { "count": 0, "documents": [] },
+    "news": { "count": 0, "documents": [] },
+    "stocks": { "count": 0, "documents": [] },
+    "systemMetrics": { "count": 0, "documents": [] },
+    "chatMessages": {
+      "count": 1,
+      "documents": [
+        {
+          "id": "QrPLPsnM48LWrtdnF8gU",
+          "roomId": "all",
+          "authorId": "lr018vf8CcW5fAv707vsl77qJy53",
+          "authorName": "임병현",
+          "authorRole": "총괄운영자",
+          "authorAvatar": "https://lh3.googleusercontent.com/a/ACg8ocJHEl1mAEI2Y1M9aw1jOMACaK-TDAItEDkX5l1efTE7Oy9wmg=s96-c",
+          "content": "ㄴㅁㅇㄹ",
+          "sentiment": "bull",
+          "status": "active",
+          "createdAt": "2026-10-07T19:26:02.281Z",
+          "classification": "TEST_DATA_KEYBOARD_MASH"
+        }
+      ]
+    }
+  },
+  "inMemoryServerState": {
+    "presenceClients": [],
+    "serverNotifications": [],
+    "userAlertCooldowns": []
+  }
+}
