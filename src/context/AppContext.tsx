@@ -9,6 +9,7 @@ import { stockRepository, StockDataSourceType } from '../services/stockRepositor
 import { stockCache } from '../services/stockCache';
 import { notificationService } from '../services/notificationService';
 import { fcmPushService } from '../services/fcmPushService';
+import { isPreviewEnvironment } from '../utils/environment';
 
 export interface ToastMessage {
   id: string;
@@ -260,20 +261,50 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const checkRealtimeConnection = async () => {
     setRealtimeStatus('connecting');
+    const isPreview = isPreviewEnvironment();
+
     try {
       const res = await fetch('/api/kiwoom/test');
       if (res.ok) {
         const data = await res.json();
         if (data.configured && data.diagnostics?.tokenTest?.success) {
           setRealtimeStatus('connected');
+        } else if (isPreview || data.isPreview) {
+          // In Google AI Studio preview, keep realtime status connected to the simulated data engine
+          setRealtimeStatus('connected');
+          if (stockDataSource === 'REAL') {
+            stockRepository.setSource('MOCK');
+            setStockDataSource('MOCK');
+          }
         } else {
           setRealtimeStatus('failed');
+          // Auto fallback to MOCK mode when real API connection fails
+          if (stockDataSource === 'REAL') {
+            stockRepository.setSource('MOCK');
+            setStockDataSource('MOCK');
+          }
+        }
+      } else {
+        if (isPreview) {
+          setRealtimeStatus('connected');
+          if (stockDataSource === 'REAL') {
+            stockRepository.setSource('MOCK');
+            setStockDataSource('MOCK');
+          }
+        } else {
+          setRealtimeStatus('failed');
+        }
+      }
+    } catch {
+      if (isPreview) {
+        setRealtimeStatus('connected');
+        if (stockDataSource === 'REAL') {
+          stockRepository.setSource('MOCK');
+          setStockDataSource('MOCK');
         }
       } else {
         setRealtimeStatus('failed');
       }
-    } catch {
-      setRealtimeStatus('failed');
     }
   };
 
@@ -282,6 +313,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [stockDataSource]);
 
   const toggleStockDataSource = async () => {
+    const isPreview = isPreviewEnvironment();
+
+    if (isPreview && stockDataSource === 'MOCK') {
+      showToast('AI 스튜디오 미리보기 환경에서는 키움 고정 IP 검증 실패 방지를 위해 [시뮬레이션 데이터 모드]로 안전하게 유지됩니다.', 'info');
+      return;
+    }
+
     const nextSource = stockDataSource === 'REAL' ? 'MOCK' : 'REAL';
     setIsStockLoading(true);
     stockRepository.setSource(nextSource);
@@ -298,7 +336,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       showToast(
         nextSource === 'REAL'
           ? '데이터 공급원이 [실제 주식 API (REAL)]로 전환되었습니다.'
-          : '데이터 공급원이 [시뮬레이션 (MOCK)]으로 전환되었습니다.',
+          : '데이터 공급원이 [시뮬레이션 데이터 모드]로 전환되었습니다.',
         'info'
       );
     } catch {
@@ -594,7 +632,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const freshExchange = await stockRepository.getExchangeRate();
         if (freshExchange) setExchangeRate(freshExchange);
       } catch {}
-    }, 4000);
+    }, 2000);
 
     return () => {
       unsubTicks();

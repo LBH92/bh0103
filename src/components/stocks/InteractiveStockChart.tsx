@@ -46,6 +46,7 @@ interface InteractiveStockChartProps {
   candles?: CandleData[];
   stockPrice: number;
   prevClose: number;
+  currency?: 'KRW' | 'USD';
 }
 
 interface PeriodConfig {
@@ -71,7 +72,15 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
   candles: initialCandles = [],
   stockPrice,
   prevClose,
+  currency = 'KRW',
 }) => {
+  const isUSD = currency === 'USD';
+  const formatPrice = (val: number) => {
+    if (isUSD) {
+      return `$${val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    }
+    return `${val.toLocaleString()}원`;
+  };
   // 1. Period & Type
   const [period, setPeriod] = useState<KiwoomChartPeriod>('1m');
   const [chartType, setChartType] = useState<'candle' | 'line'>('candle');
@@ -1078,13 +1087,13 @@ export const InteractiveStockChart: React.FC<InteractiveStockChartProps> = ({
 
             {/* Right Price Scale Axis */}
             <text x={width - 10} y={paddingTop + 10} fill="currentColor" className="text-[10px] text-slate-400 font-mono" textAnchor="end">
-              {maxPrice.toLocaleString()}원
+              {formatPrice(maxPrice)}
             </text>
             <text x={width - 10} y={paddingTop + mainPriceHeight * 0.5 + 4} fill="currentColor" className="text-[10px] text-slate-400 font-mono" textAnchor="end">
-              {Math.round((maxPrice + minPrice) / 2).toLocaleString()}원
+              {formatPrice(isUSD ? Number(((maxPrice + minPrice) / 2).toFixed(2)) : Math.round((maxPrice + minPrice) / 2))}
             </text>
             <text x={width - 10} y={paddingTop + mainPriceHeight - 4} fill="currentColor" className="text-[10px] text-slate-400 font-mono" textAnchor="end">
-              {minPrice.toLocaleString()}원
+              {formatPrice(minPrice)}
             </text>
 
             {/* Bollinger Bands Shaded Area & Lines */}

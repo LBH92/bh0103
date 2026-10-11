@@ -20,6 +20,7 @@ import {
 } from './stockRepositoryInterface';
 import { MockStockRepository } from './mockStockRepository';
 import { RealStockRepository } from './realStockRepository';
+import { isPreviewEnvironment } from '../utils/environment';
 
 export type { ChartPeriod, VolumeAnalysisData, StockDataSourceType, IStockRepository, KiwoomChartPeriod, KiwoomChartResponse };
 
@@ -29,25 +30,34 @@ class StockRepositoryDelegator implements IStockRepository {
   private activeSource: StockDataSourceType;
 
   constructor() {
-    // Check environment variable:
-    // If VITE_STOCK_DATA_SOURCE is explicitly set to REAL or in production, use REAL.
-    // Otherwise in development default to MOCK.
-    const envSource = import.meta.env.VITE_STOCK_DATA_SOURCE as string | undefined;
-    const isProd = import.meta.env.PROD;
+    // In Google AI Studio preview or sandbox environment (run.app, localhost, webcontainer),
+    // default automatically to MOCK mode for smooth testing without Kiwoom IP blocks
+    const isPreview = isPreviewEnvironment();
 
-    if (envSource === 'REAL' || isProd) {
-      this.activeSource = 'REAL';
-    } else {
+    if (isPreview) {
       this.activeSource = 'MOCK';
-    }
+    } else {
+      const envSource = import.meta.env.VITE_STOCK_DATA_SOURCE as string | undefined;
+      const isProd = import.meta.env.PROD;
 
-    // Check localStorage override if user changed it in settings
-    try {
-      const saved = localStorage.getItem('bd_stock_data_source') as StockDataSourceType | null;
-      if (saved === 'MOCK' || saved === 'REAL') {
-        this.activeSource = saved;
+      if (envSource === 'REAL' || isProd) {
+        this.activeSource = 'REAL';
+      } else {
+        this.activeSource = 'MOCK';
       }
-    } catch {}
+
+      // Check localStorage override if user changed it in settings
+      try {
+        const saved = localStorage.getItem('bd_stock_data_source') as StockDataSourceType | null;
+        if (saved === 'MOCK' || saved === 'REAL') {
+          this.activeSource = saved;
+        }
+      } catch {}
+    }
+  }
+
+  public isPreview(): boolean {
+    return isPreviewEnvironment();
   }
 
   private get activeRepo(): IStockRepository {

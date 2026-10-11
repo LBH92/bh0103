@@ -37,6 +37,7 @@ import { marketMonitorClient } from '../../services/marketMonitorClient';
 import { globalMarketClient } from '../../services/globalMarketClient';
 import { MarketAlertEvent } from '../../types/marketMonitor';
 import { matchHangulSearch } from '../../utils/hangul';
+import { MarketEventDetailModal } from '../common/MarketEventDetailModal';
 
 export const HomeView: React.FC = () => {
   const { 
@@ -56,6 +57,8 @@ export const HomeView: React.FC = () => {
   const [activeMoverTab, setActiveMoverTab] = useState<'surge_gain' | 'surge_loss' | 'volume_surge' | 'popular'>('surge_gain');
   const [liveMonitorEvents, setLiveMonitorEvents] = useState<MarketAlertEvent[]>([]);
   const [homeSearchQuery, setHomeSearchQuery] = useState('');
+  const [selectedMarketEvent, setSelectedMarketEvent] = useState<MarketEvent | null>(null);
+  const [isMarketEventModalOpen, setIsMarketEventModalOpen] = useState(false);
 
   // Global Market Summary State
   const [marketCategory, setMarketCategory] = useState<GlobalMarketCategory>('domestic');
@@ -289,7 +292,11 @@ export const HomeView: React.FC = () => {
           {activeEvents.map(evt => (
             <div
               key={evt.id}
-              className={`p-3.5 sm:p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
+              onClick={() => {
+                setSelectedMarketEvent(evt);
+                setIsMarketEventModalOpen(true);
+              }}
+              className={`p-3.5 sm:p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors cursor-pointer hover:shadow-xs ${
                 evt.severity === 'urgent'
                   ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-500/50'
                   : evt.severity === 'warning'
@@ -333,8 +340,14 @@ export const HomeView: React.FC = () => {
               </div>
 
               <button
-                onClick={() => setActiveTab('alerts')}
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSelectedMarketEvent(evt);
+                  setIsMarketEventModalOpen(true);
+                }}
                 className="self-end sm:self-center shrink-0 px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-900/5 hover:bg-slate-900/10 dark:bg-white/10 dark:hover:bg-white/20 text-slate-700 dark:text-white border border-slate-200/60 dark:border-white/10 transition-colors flex items-center gap-1 cursor-pointer"
+                aria-label={`${evt.title} 상세 확인`}
               >
                 <span>상세 확인</span>
                 <ChevronRight className="w-3.5 h-3.5" />

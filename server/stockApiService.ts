@@ -55,6 +55,14 @@ export const TRACKED_STOCKS = [
   { symbol: '105560', ticker: '105560.KS', name: 'KB금융', market: 'KOSPI' as const, sector: '금융 / 은행' },
   { symbol: '055550', ticker: '055550.KS', name: '신한지주', market: 'KOSPI' as const, sector: '금융 / 은행' },
   { symbol: '417860', ticker: '417860.KQ', name: '삼현', market: 'KOSDAQ' as const, sector: '로봇 / 액추에이터' },
+  // US Major Stocks
+  { symbol: 'AAPL', ticker: 'AAPL', name: '애플', market: 'US' as const, sector: '빅테크 / IT', currency: 'USD' as const, exchange: 'NASDAQ' },
+  { symbol: 'NVDA', ticker: 'NVDA', name: '엔비디아', market: 'US' as const, sector: '반도체 / AI', currency: 'USD' as const, exchange: 'NASDAQ' },
+  { symbol: 'MSFT', ticker: 'MSFT', name: '마이크로소프트', market: 'US' as const, sector: '클라우드 / AI', currency: 'USD' as const, exchange: 'NASDAQ' },
+  { symbol: 'TSLA', ticker: 'TSLA', name: '테슬라', market: 'US' as const, sector: '전기차 / 자율주행', currency: 'USD' as const, exchange: 'NASDAQ' },
+  { symbol: 'AMZN', ticker: 'AMZN', name: '아마존', market: 'US' as const, sector: '전자상거래 / 클라우드', currency: 'USD' as const, exchange: 'NASDAQ' },
+  { symbol: 'GOOGL', ticker: 'GOOGL', name: '알파벳 A', market: 'US' as const, sector: '검색 / AI', currency: 'USD' as const, exchange: 'NASDAQ' },
+  { symbol: 'META', ticker: 'META', name: '메타 플랫폼스', market: 'US' as const, sector: 'SNS / 메타버스', currency: 'USD' as const, exchange: 'NASDAQ' },
 ];
 
 export interface FetchStockResult {
@@ -79,17 +87,20 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
   if (cached) return cached;
 
   const masterItem = kiwoomApiService.getMasterStock(symbol);
-  const item = TRACKED_STOCKS.find(s => s.symbol === symbol);
-  if (!masterItem && !item && !kiwoomApiService.isConfigured()) {
+  const item = TRACKED_STOCKS.find(s => s.symbol.toUpperCase() === symbol.toUpperCase());
+  const isUS = item?.market === 'US' || (!masterItem && /^[A-Z]{1,5}$/.test(symbol.toUpperCase()));
+  if (!masterItem && !item && !isUS && !kiwoomApiService.isConfigured()) {
     return { stock: null, dataSource: 'mock' };
   }
 
   const stockName = masterItem?.name || item?.name || symbol;
-  const stockMarket = masterItem?.market || item?.market || 'KOSPI';
-  const stockSector = masterItem?.sector || item?.sector || '기타';
+  const stockMarket = isUS ? 'US' : (masterItem?.market || item?.market || 'KOSPI');
+  const stockSector = item?.sector || masterItem?.sector || (isUS ? '미국 주식' : '기타');
+  const currency: 'KRW' | 'USD' = isUS ? 'USD' : 'KRW';
+  const exchange = item?.exchange || (isUS ? 'NASDAQ/NYSE' : undefined);
 
-  // 1. Priority: Try Kiwoom REST API if configured
-  if (kiwoomApiService.isConfigured()) {
+  // 1. Priority: Try Kiwoom REST API for domestic Korean stocks
+  if (!isUS && kiwoomApiService.isConfigured()) {
     try {
       const kiwoomData = await kiwoomApiService.fetchStockPrice(symbol);
       if (kiwoomData && kiwoomData.price) {
@@ -129,6 +140,9 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
           instNetBuy: 0,
           candles: kiwoomCandles,
           sparkline: sparkline.length >= 2 ? sparkline : [prevClose, price],
+          currency: 'KRW',
+          dataSource: 'kiwoom',
+          lastUpdated: new Date().toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' }),
         };
         const result: FetchStockResult = { stock, dataSource: 'kiwoom' };
         setInCache(cacheKey, result, 5000);
@@ -139,10 +153,12 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
     }
   }
 
-  // 2. Secondary / Fallback: Yahoo Finance Live Data API
+  // 2. Secondary / Fallback & Primary for US stocks: Yahoo Finance Live Data API
   try {
-    const yahooTicker = item?.ticker || `${symbol}.${stockMarket === 'KOSDAQ' ? 'KQ' : 'KS'}`;
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooTicker}?interval=1d&range=3mo`;
+    const yahooTicker = isUS
+      ? (item?.ticker || symbol.toUpperCase())
+      : (item?.ticker || `${symbol}.${stockMarket === 'KOSDAQ' ? 'KQ' : 'KS'}`);
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooTicker)}?interval=1d&range=3mo`;
     const res = await fetch(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -155,15 +171,18 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
       const result = json.chart?.result?.[0];
       if (result) {
         const meta = result.meta;
-        const price = Math.round(meta.regularMarketPrice || meta.chartPreviousClose || 50000);
-        const prevClose = Math.round(meta.chartPreviousClose || price);
-        const change = price - prevClose;
-        const changePercent = Number(((change / (prevClose || 1)) * 100).toFixed(2));
+        const rawPrice = meta.regularMarketPrice ?? meta.chartPreviousClose ?? 0;
+        const rawPrevClose = meta.chartPreviousClose ?? rawPrice;
+        const price = isUS ? Number(rawPrice.toFixed(2)) : Math.round(rawPrice);
+        const prevClose = isUS ? Number(rawPrevClose.toFixed(2)) : Math.round(rawPrevClose);
+        const rawChange = price - prevClose;
+        const change = isUS ? Number(rawChange.toFixed(2)) : Math.round(rawChange);
+        const changePercent = prevClose !== 0 ? Number(((change / prevClose) * 100).toFixed(2)) : 0;
         const volume = meta.regularMarketVolume || 1000000;
-        const openPrice = Math.round(meta.regularMarketDayLow || price);
-        const highPrice = Math.round(meta.regularMarketDayHigh || price);
-        const lowPrice = Math.round(meta.regularMarketDayLow || price);
-        const tradingValue = Math.round((price * volume) / 100000000); // 억 원
+        const openPrice = isUS ? Number((meta.regularMarketDayLow || price).toFixed(2)) : Math.round(meta.regularMarketDayLow || price);
+        const highPrice = isUS ? Number((meta.regularMarketDayHigh || price).toFixed(2)) : Math.round(meta.regularMarketDayHigh || price);
+        const lowPrice = isUS ? Number((meta.regularMarketDayLow || price).toFixed(2)) : Math.round(meta.regularMarketDayLow || price);
+        const tradingValue = isUS ? Math.round((price * volume) / 1000000) : Math.round((price * volume) / 100000000); // US: 백만 달러, KR: 억 원
 
         // Parse Historical Candles
         const candles: CandleData[] = [];
@@ -181,19 +200,26 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
             const dateStr = `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
             candles.push({
               time: dateStr,
-              open: Math.round(opens[i] || closes[i]),
-              high: Math.round(highs[i] || closes[i]),
-              low: Math.round(lows[i] || closes[i]),
-              close: Math.round(closes[i]),
+              open: isUS ? Number((opens[i] || closes[i]).toFixed(2)) : Math.round(opens[i] || closes[i]),
+              high: isUS ? Number((highs[i] || closes[i]).toFixed(2)) : Math.round(highs[i] || closes[i]),
+              low: isUS ? Number((lows[i] || closes[i]).toFixed(2)) : Math.round(lows[i] || closes[i]),
+              close: isUS ? Number(closes[i].toFixed(2)) : Math.round(closes[i]),
               volume: Math.round(volumes[i] || 0),
             });
           }
         }
 
         const sparkline = candles.slice(-7).map(c => c.close);
+        const high52w = meta.fiftyTwoWeekHigh ? (isUS ? Number(meta.fiftyTwoWeekHigh.toFixed(2)) : Math.round(meta.fiftyTwoWeekHigh)) : (isUS ? Number((price * 1.3).toFixed(2)) : Math.round(price * 1.3));
+        const low52w = meta.fiftyTwoWeekLow ? (isUS ? Number(meta.fiftyTwoWeekLow.toFixed(2)) : Math.round(meta.fiftyTwoWeekLow)) : (isUS ? Number((price * 0.7).toFixed(2)) : Math.round(price * 0.7));
+        const marketCap = isUS ? Math.round((price * (volume * 50)) / 100000000) : (masterItem?.marketCap || Math.round((price * 500000000) / 100000000));
+
+        // Delay status check for US markets
+        const delayStatus = isUS ? 'delayed_15m' : undefined;
+        const delayLabel = isUS ? '15분 지연 (정규장 23:30~06:00 KST)' : undefined;
 
         const stock: Stock = {
-          symbol,
+          symbol: isUS ? symbol.toUpperCase() : symbol,
           name: stockName,
           market: stockMarket,
           sector: stockSector,
@@ -207,17 +233,23 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
           highPrice,
           lowPrice,
           prevClose,
-          high52w: Math.round(price * 1.3),
-          low52w: Math.round(price * 0.7),
-          marketCap: masterItem?.marketCap || Math.round((price * 500000000) / 100000000), // 억 원
-          per: 15.2,
-          pbr: 1.4,
-          eps: Math.round(price / 15.2),
-          dividendYield: 1.5,
-          foreignNetBuy: Math.round(Math.random() * 2000 - 500),
-          instNetBuy: Math.round(Math.random() * 1500 - 400),
+          high52w,
+          low52w,
+          marketCap,
+          per: isUS ? 28.5 : 15.2,
+          pbr: isUS ? 4.2 : 1.4,
+          eps: isUS ? Number((price / 28.5).toFixed(2)) : Math.round(price / 15.2),
+          dividendYield: isUS ? 0.8 : 1.5,
+          foreignNetBuy: 0,
+          instNetBuy: 0,
           candles,
           sparkline: sparkline.length >= 2 ? sparkline : [prevClose, price],
+          currency,
+          exchange,
+          delayStatus,
+          delayLabel,
+          dataSource: 'yahoo',
+          lastUpdated: new Date().toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' }),
         };
 
         const fetchResult: FetchStockResult = { stock, dataSource: 'yahoo' };

@@ -13,7 +13,7 @@ import {
   fetchRealExchangeRate,
   TRACKED_STOCKS
 } from './server/stockApiService';
-import { Stock, AppNotification, MarketFilterType, RankingSortType } from './src/types';
+import { Stock, AppNotification, MarketFilterType, RankingSortType, KiwoomChartResponse } from './src/types';
 import { kiwoomApiService } from './server/kiwoomApiService';
 import { rankingApiService } from './server/rankingApiService';
 import { indexApiService } from './server/indexApiService';
@@ -75,10 +75,12 @@ const isProduction = process.env.NODE_ENV === 'production';
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 // Environment Data Source Configuration:
-// If Kiwoom API is configured or in production, default to REAL. Otherwise fallback to STOCK_DATA_SOURCE or MOCK.
-const DEFAULT_SOURCE = process.env.STOCK_DATA_SOURCE || (kiwoomApiService.isConfigured() || isProduction ? 'REAL' : 'MOCK');
+// In Google AI Studio preview or non-fixed IP environment, default strictly to MOCK mode.
+// Only on dedicated GCP Fixed IP server with configured keys, default to REAL.
+const isFixedIpServer = kiwoomApiService.isFixedIpServer();
+const DEFAULT_SOURCE = process.env.STOCK_DATA_SOURCE || (isFixedIpServer && kiwoomApiService.isConfigured() ? 'REAL' : 'MOCK');
 
-console.log(`[Server] Default Stock Data Source: ${DEFAULT_SOURCE} (isProduction: ${isProduction}, KiwoomConfigured: ${kiwoomApiService.isConfigured()})`);
+console.log(`[Server] Default Stock Data Source: ${DEFAULT_SOURCE} (isProduction: ${isProduction}, isFixedIpServer: ${isFixedIpServer}, KiwoomConfigured: ${kiwoomApiService.isConfigured()})`);
 
 // In-Memory Server Mock Stock Data State (Simulating Exchange Live Feed for MOCK mode)
 let mockServerStocks = [...INITIAL_STOCKS];
@@ -314,7 +316,8 @@ async function startServer() {
   // 1-1. Kiwoom API Diagnostics & Live Test
   app.get('/api/kiwoom/test', async (req, res) => {
     try {
-      const diag = await kiwoomApiService.runDiagnostics();
+      const registeredIp = (req.query.registeredIp as string) || (req.query.ip as string) || undefined;
+      const diag = await kiwoomApiService.runDiagnostics(registeredIp);
       res.json({
         service: 'Kiwoom Open API',
         timestamp: new Date().toISOString(),
@@ -337,7 +340,7 @@ async function startServer() {
   // 1-1-0. Update Kiwoom Credentials & Live Re-test
   app.post('/api/kiwoom/config', async (req, res) => {
     try {
-      const { appKey, appSecret, isMock } = req.body || {};
+      const { appKey, appSecret, isMock, registeredIp } = req.body || {};
       if (!appKey || !appSecret) {
         return res.status(400).json({ error: 'App Key와 App Secret을 모두 입력해 주세요.' });
       }
@@ -346,7 +349,7 @@ async function startServer() {
       kiwoomApiService.updateCredentials(String(appKey), String(appSecret), isMock === true);
 
       // Run live diagnostics (OAuth token + 삼성전자 005930 현재가 실시간 테스트)
-      const diag = await kiwoomApiService.runDiagnostics();
+      const diag = await kiwoomApiService.runDiagnostics(registeredIp);
 
       res.json({
         success: true,
@@ -364,10 +367,15 @@ async function startServer() {
   });
 
   // 1-1-0-1. Get Server Public IP for Kiwoom OpenAPI Portal IP registration
-  app.get('/api/kiwoom/server-ip', (_req, res) => {
+  app.get('/api/kiwoom/server-ip', async (_req, res) => {
+    const serverIp = await kiwoomApiService.detectPublicServerIp(true);
+    const isFixedIp = kiwoomApiService.isFixedIpServer();
     res.json({
-      serverIp: kiwoomApiService.getPublicServerIp(),
-      guide: '키움 REST API 홈페이지 > API 사용신청 화면에서 위 공인 IP를 등록해 주세요.',
+      serverIp,
+      isFixedIp,
+      ipType: isFixedIp ? 'fixed_nat' : 'dynamic_cloud_run',
+      verifiedAt: new Date().toISOString(),
+      guide: '키움 REST API 홈페이지 > API 사용신청 화면에서 위 공인 IP를 등록해 주세요. (주의: Cloud Run 기본 환경은 Google Cloud 동적 IP 풀을 사용하므로, 인스턴스 재배포 시 IP가 변경될 수 있습니다)',
     });
   });
 
@@ -439,6 +447,64 @@ async function startServer() {
     });
   });
 
+  // Background Simulated Tick Broadcast for SSE clients in Preview Mode or when Kiwoom WS is disconnected
+  setInterval(() => {
+    if (clientTickStreams.size === 0 && clientOrderBookStreams.size === 0) return;
+    if (kiwoomApiService.isWsConnected()) return; // Kiwoom live websocket is active
+
+    const subscribedList = Array.from(kiwoomApiService.getSubscribedSymbols());
+    const targetSymbols = subscribedList.length > 0 ? subscribedList : ['005930', '000660'];
+    const nowTime = new Date().toTimeString().slice(0, 8);
+
+    targetSymbols.forEach(sym => {
+      const stock = mockServerStocks.find(s => s.symbol === sym) || INITIAL_STOCKS.find(s => s.symbol === sym);
+      if (!stock) return;
+
+      const step = stock.price >= 100000 ? 500 : (stock.price >= 50000 ? 100 : 50);
+      const delta = (Math.random() > 0.48 ? 1 : -1) * step;
+      const newPrice = Math.max(100, stock.price + delta);
+      const prevClose = stock.prevClose || (stock.price - stock.change);
+      const newChange = newPrice - prevClose;
+      const newPercent = Number(((newChange / prevClose) * 100).toFixed(2));
+      stock.price = newPrice;
+      stock.change = newChange;
+      stock.changePercent = newPercent;
+      stock.volume += Math.floor(Math.random() * 150) + 20;
+
+      const tick = {
+        symbol: stock.symbol,
+        price: stock.price,
+        change: stock.change,
+        changePercent: stock.changePercent,
+        volume: stock.volume,
+        open: stock.openPrice,
+        high: Math.max(stock.highPrice, newPrice),
+        low: Math.min(stock.lowPrice, newPrice),
+        time: nowTime,
+        source: 'SIMULATED',
+      };
+
+      const tickPayload = `data: ${JSON.stringify(tick)}\n\n`;
+      for (const client of clientTickStreams) {
+        try {
+          client.write(tickPayload);
+        } catch {
+          clientTickStreams.delete(client);
+        }
+      }
+
+      const ob = generateOrderBook(stock);
+      const obPayload = `data: ${JSON.stringify(ob)}\n\n`;
+      for (const client of clientOrderBookStreams) {
+        try {
+          client.write(obPayload);
+        } catch {
+          clientOrderBookStreams.delete(client);
+        }
+      }
+    });
+  }, 2500);
+
   // 1-1-3. Subscribe / Unsubscribe Symbol for Execution Feeds
   app.post('/api/stocks/subscribe', (req, res) => {
     const { symbol } = req.body;
@@ -493,7 +559,28 @@ async function startServer() {
 
     const q = query.toLowerCase();
 
-    // 1. Prioritize Kiwoom full master stocks search if loaded
+    // 1. Check US Tracked Stocks first for matching ticker/name
+    const usMatches = TRACKED_STOCKS.filter(s => s.market === 'US').filter(s => {
+      if (market && market !== 'ALL' && market !== 'US') return false;
+      return (
+        s.name.toLowerCase().includes(q) ||
+        s.symbol.toLowerCase().includes(q) ||
+        s.sector.toLowerCase().includes(q) ||
+        matchHangulSearch(s.name, q)
+      );
+    }).map(s => ({
+      symbol: s.symbol,
+      name: s.name,
+      market: 'US' as const,
+      sector: s.sector,
+      price: 0,
+      change: 0,
+      changePercent: 0,
+      marketCap: 0,
+      currency: 'USD' as const,
+    }));
+
+    // 2. Prioritize Kiwoom full master stocks search if loaded
     const masterStocks = kiwoomApiService.getMasterStocks();
     if (masterStocks && masterStocks.length > 0) {
       let matched = masterStocks.filter(s => {
@@ -536,11 +623,7 @@ async function startServer() {
         return a.name.length - b.name.length;
       });
 
-      if (limit > 0) {
-        matched = matched.slice(0, limit);
-      }
-
-      const results = matched.map(m => ({
+      const domesticResults = matched.map(m => ({
         symbol: m.code,
         name: m.name,
         market: m.market,
@@ -549,11 +632,17 @@ async function startServer() {
         change: 0,
         changePercent: 0,
         marketCap: m.marketCap || 0,
+        currency: 'KRW' as const,
       }));
 
-      res.setHeader('X-Data-Source', 'kiwoom');
+      let combined = [...usMatches, ...domesticResults];
+      if (limit > 0) {
+        combined = combined.slice(0, limit);
+      }
+
+      res.setHeader('X-Data-Source', 'combined');
       res.setHeader('Cache-Control', 'no-cache');
-      return res.json(results);
+      return res.json(combined);
     }
 
     // 2. Fallback to INITIAL_STOCKS
@@ -710,6 +799,29 @@ async function startServer() {
         }
       } catch {}
 
+      // If this is a US stock, return candles directly from liveStock (from Yahoo Finance / global provider)
+      if (liveStockObj?.market === 'US' || /^[A-Z]{1,5}$/.test(symbol.toUpperCase())) {
+        const candles = liveStockObj?.candles || [];
+        const chartData: KiwoomChartResponse = {
+          symbol: symbol.toUpperCase(),
+          period: (period as any) || 'day',
+          periodLabel: '일봉',
+          trId: 'GLOBAL_US',
+          supported: true,
+          candles,
+          currentPrice: currentPrice || liveStockObj?.price,
+          lastCandleClose: candles.length > 0 ? candles[candles.length - 1].close : currentPrice,
+          source: 'yahoo',
+          cached: true,
+          timestamp: Date.now(),
+          currency: 'USD',
+          error: null,
+        };
+        res.setHeader('X-Data-Source', 'yahoo');
+        res.setHeader('X-Cache', 'HIT');
+        return res.json(chartData);
+      }
+
       let chartData = await kiwoomApiService.fetchStockChart(symbol, period, currentPrice);
 
       // If Kiwoom returns 0 candles (e.g. IP unregistered) and real daily candles exist, fallback to liveStock.candles
@@ -717,7 +829,7 @@ async function startServer() {
         chartData = {
           ...chartData,
           candles: liveStockObj.candles,
-          source: 'kiwoom' as any,
+          source: (liveStockObj.dataSource || 'yahoo') as any,
           supported: true,
           error: null,
         };
@@ -1574,8 +1686,8 @@ async function startServer() {
     console.log(`[Data Pipeline] Browser -> Backend API -> Stock API -> Backend -> Browser`);
     console.log(`[Source Mode] ${DEFAULT_SOURCE}`);
 
-    // Preload & refresh Kiwoom stock master list from live API in background
-    if (kiwoomApiService.isConfigured()) {
+    // Preload & refresh Kiwoom stock master list from live API in background (Only on GCP Fixed IP server)
+    if (kiwoomApiService.isFixedIpServer() && kiwoomApiService.isConfigured()) {
       kiwoomApiService.fetchStockMasterList(true).then(list => {
         console.log(`[Server] Live updated ${list.length} Kiwoom master stocks.`);
       }).catch(err => {

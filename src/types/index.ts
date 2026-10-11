@@ -1,17 +1,17 @@
 export interface Stock {
   symbol: string;
   name: string;
-  market: 'KOSPI' | 'KOSDAQ';
+  market: 'KOSPI' | 'KOSDAQ' | 'US';
   sector: string;
   price: number;
   change: number;
   changePercent: number;
   volume: number;
   volumeRatio: number; // vs 20-day avg (e.g., 340% for volume surge)
-  tradingValue: number; // in 억 원
+  tradingValue: number; // in 억 원 (KRW) or 백만 달러 (USD)
   high52w: number;
   low52w: number;
-  marketCap: number; // in 조/억 원
+  marketCap: number; // in 조/억 원 (KRW) or 억 달러 (USD)
   per: number;
   pbr: number;
   eps: number;
@@ -24,6 +24,13 @@ export interface Stock {
   instNetBuy: number; // 기관 순매수 (억 원)
   candles: CandleData[];
   sparkline: number[];
+  currency?: 'KRW' | 'USD';
+  exchange?: string;
+  delayStatus?: string;
+  delayLabel?: string;
+  marketSession?: 'REGULAR' | 'PRE' | 'POST' | 'CLOSED';
+  lastUpdated?: string;
+  dataSource?: 'kiwoom' | 'yahoo' | 'mock';
 }
 
 export interface CandleData {
@@ -47,11 +54,12 @@ export interface KiwoomChartResponse {
   candles: CandleData[];
   currentPrice?: number;
   lastCandleClose?: number;
-  source: 'kiwoom';
+  source: 'kiwoom' | 'yahoo' | 'mock';
   cached: boolean;
   timestamp: number;
   error?: string | null;
   serverIp?: string;
+  currency?: 'KRW' | 'USD';
 }
 
 export interface StockIndex {
@@ -114,7 +122,7 @@ export interface MarketEvent {
   type: 'sidecar' | 'circuit_breaker' | 'disclosure' | 'earnings' | 'macro';
   title: string;
   description: string;
-  market?: 'KOSPI' | 'KOSDAQ' | 'ALL';
+  market?: 'KOSPI' | 'KOSDAQ' | 'US' | 'ALL';
   symbol?: string;
   symbolName?: string;
   timestamp: string;
@@ -471,14 +479,14 @@ export interface AdminNotificationItem {
   status: 'sent' | 'scheduled';
 }
 
-export type MarketFilterType = 'ALL' | 'KOSPI' | 'KOSDAQ';
+export type MarketFilterType = 'ALL' | 'KOSPI' | 'KOSDAQ' | 'US';
 export type RankingSortType = 'change_rise' | 'change_fall' | 'volume' | 'trading_value';
 
 export interface StockRankingItem {
   rank: number;
   symbol: string;
   name: string;
-  market: 'KOSPI' | 'KOSDAQ';
+  market: 'KOSPI' | 'KOSDAQ' | 'US';
   sector: string;
   price: number;
   change: number;

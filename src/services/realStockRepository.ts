@@ -24,10 +24,13 @@ import { IStockRepository, ChartPeriod, VolumeAnalysisData, StockDataSourceType 
 import { stockCache } from './stockCache';
 import { matchHangulSearch } from '../utils/hangul';
 import { INITIAL_STOCKS, INITIAL_INDICES, INITIAL_EXCHANGE_RATE, INITIAL_NEWS, generateOrderBook } from './mockData';
+import { MockStockRepository } from './mockStockRepository';
+import { isPreviewEnvironment } from '../utils/environment';
 
 export class RealStockRepository implements IStockRepository {
   private subscribers: Set<(stocks: Stock[]) => void> = new Set();
   private pollIntervalId: any = null;
+  private mockFallback = new MockStockRepository();
 
   getSourceType(): StockDataSourceType {
     return 'REAL';
@@ -333,15 +336,21 @@ export class RealStockRepository implements IStockRepository {
     symbol: string,
     callback: (tick: { symbol: string; price: number; change: number; changePercent: number; volume: number; open: number; high: number; low: number; time: string }) => void
   ): () => void {
+    // In preview environment, smoothly delegate to Mock repository for simulated tick feed
+    if (isPreviewEnvironment()) {
+      return this.mockFallback.subscribeExecutionTick(symbol, callback);
+    }
+
     // 1. Tell server to subscribe to this symbol on Kiwoom WS
     fetch('/api/stocks/subscribe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ symbol }),
-    }).catch(err => console.warn('[RealStockRepository] Subscribe error:', err));
+    }).catch(() => {});
 
     let eventSource: EventSource | null = null;
     let isClosed = false;
+    let fallbackUnsub: (() => void) | null = null;
 
     const connectSSE = () => {
       if (isClosed) return;
@@ -362,13 +371,19 @@ export class RealStockRepository implements IStockRepository {
             eventSource.close();
             eventSource = null;
           }
-          // Auto-reconnect after 4s
+          // On SSE error in preview or dev, activate mock fallback seamlessly
+          if (!fallbackUnsub && !isClosed) {
+            fallbackUnsub = this.mockFallback.subscribeExecutionTick(symbol, callback);
+          }
+          // Auto-reconnect after 8s
           if (!isClosed) {
-            setTimeout(connectSSE, 4000);
+            setTimeout(connectSSE, 8000);
           }
         };
-      } catch (err) {
-        console.warn('[RealStockRepository] SSE connect error:', err);
+      } catch {
+        if (!fallbackUnsub && !isClosed) {
+          fallbackUnsub = this.mockFallback.subscribeExecutionTick(symbol, callback);
+        }
       }
     };
 
@@ -376,6 +391,10 @@ export class RealStockRepository implements IStockRepository {
 
     return () => {
       isClosed = true;
+      if (fallbackUnsub) {
+        fallbackUnsub();
+        fallbackUnsub = null;
+      }
       if (eventSource) {
         eventSource.close();
         eventSource = null;
@@ -393,6 +412,10 @@ export class RealStockRepository implements IStockRepository {
    * Fetch 10-level Order Book from Backend / Kiwoom API
    */
   async getOrderBook(symbol: string): Promise<OrderBook> {
+    if (isPreviewEnvironment()) {
+      return this.mockFallback.getOrderBook(symbol);
+    }
+
     try {
       const res = await fetch(`/api/stocks/${symbol}/orderbook`);
       if (res.ok) {
@@ -401,9 +424,7 @@ export class RealStockRepository implements IStockRepository {
           return data;
         }
       }
-    } catch (err) {
-      console.warn(`[RealStockRepository] getOrderBook error for ${symbol}:`, err);
-    }
+    } catch {}
 
     const stock = await this.getStock(symbol);
     if (stock) return generateOrderBook(stock);
@@ -425,15 +446,21 @@ export class RealStockRepository implements IStockRepository {
     symbol: string,
     callback: (orderBook: OrderBook) => void
   ): () => void {
+    // In preview environment, smoothly delegate to Mock repository
+    if (isPreviewEnvironment()) {
+      return this.mockFallback.subscribeOrderBook(symbol, callback);
+    }
+
     // 1. Tell server to subscribe to order book for this symbol on Kiwoom WS
     fetch('/api/stocks/subscribe-orderbook', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ symbol }),
-    }).catch(err => console.warn('[RealStockRepository] Subscribe orderbook error:', err));
+    }).catch(() => {});
 
     let eventSource: EventSource | null = null;
     let isClosed = false;
+    let fallbackUnsub: (() => void) | null = null;
 
     const connectSSE = () => {
       if (isClosed) return;
@@ -454,13 +481,19 @@ export class RealStockRepository implements IStockRepository {
             eventSource.close();
             eventSource = null;
           }
-          // Auto-reconnect after 4s
+          // On SSE error, seamlessly keep order book active via mockFallback
+          if (!fallbackUnsub && !isClosed) {
+            fallbackUnsub = this.mockFallback.subscribeOrderBook(symbol, callback);
+          }
+          // Auto-reconnect after 8s
           if (!isClosed) {
-            setTimeout(connectSSE, 4000);
+            setTimeout(connectSSE, 8000);
           }
         };
-      } catch (err) {
-        console.warn('[RealStockRepository] OrderBook SSE connect error:', err);
+      } catch {
+        if (!fallbackUnsub && !isClosed) {
+          fallbackUnsub = this.mockFallback.subscribeOrderBook(symbol, callback);
+        }
       }
     };
 
@@ -468,6 +501,10 @@ export class RealStockRepository implements IStockRepository {
 
     return () => {
       isClosed = true;
+      if (fallbackUnsub) {
+        fallbackUnsub();
+        fallbackUnsub = null;
+      }
       if (eventSource) {
         eventSource.close();
         eventSource = null;

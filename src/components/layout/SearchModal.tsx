@@ -224,7 +224,9 @@ export const SearchModal: React.FC = () => {
 
                             {/* 3. 시장 */}
                             <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
-                              stock.market === 'KOSPI'
+                              stock.market === 'US'
+                                ? 'bg-purple-500/10 text-purple-500 border border-purple-500/20'
+                                : stock.market === 'KOSPI'
                                 ? 'bg-indigo-500/10 text-indigo-500 border border-indigo-500/20'
                                 : 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'
                             }`}>
@@ -249,13 +251,13 @@ export const SearchModal: React.FC = () => {
                           {stock.price > 0 ? (
                             <>
                               <div className="text-sm font-bold font-mono text-slate-900 dark:text-white">
-                                {stock.price.toLocaleString()}원
+                                {stock.currency === 'USD' ? `$${stock.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `${stock.price.toLocaleString()}원`}
                               </div>
                               <PriceBadge change={stock.change} changePercent={stock.changePercent} size="sm" />
                             </>
                           ) : (
                             <div className="text-[11px] font-semibold text-rose-500 bg-rose-500/10 px-2 py-0.5 rounded border border-rose-500/20">
-                              키움 실시간 조회
+                              {stock.market === 'US' ? '미국 주식 조회' : '키움 실시간 조회'}
                             </div>
                           )}
                         </div>

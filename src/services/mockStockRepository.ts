@@ -12,10 +12,133 @@ import { matchHangulSearch } from '../utils/hangul';
 
 export class MockStockRepository implements IStockRepository {
   private localStocks: Stock[] = [...INITIAL_STOCKS];
-  private localIndices: StockIndex[] = [...INITIAL_INDICES];
+  private localIndices: StockIndex[] = INITIAL_INDICES.map(idx => ({ ...idx }));
   private localExchange: ExchangeRate = { ...INITIAL_EXCHANGE_RATE };
   private subscribers: Set<(stocks: Stock[]) => void> = new Set();
+  private executionSubscribers: Map<string, Set<(tick: any) => void>> = new Map();
+  private orderBookSubscribers: Map<string, Set<(ob: OrderBook) => void>> = new Map();
   private timer: any = null;
+
+  private popularSymbols = ['005930', '000660', '005380', '035420', '035720', '373220', '247540', '196170'];
+
+  private startSimulationTimer() {
+    if (this.timer) return;
+
+    this.timer = setInterval(() => {
+      const nowTime = new Date().toTimeString().slice(0, 8);
+
+      // 1. Simulate Smooth Indices Movement (KOSPI & KOSDAQ)
+      this.localIndices = this.localIndices.map(idx => {
+        const isKospi = idx.symbol === 'KOSPI';
+        const step = isKospi ? 0.35 : 0.22;
+        const dir = Math.random() > 0.49 ? 1 : -1;
+        const delta = Number(((Math.random() * step) * dir).toFixed(2));
+        const newValue = Number(Math.max(100, idx.value + delta).toFixed(2));
+        const basePrev = isKospi ? 2605.50 : 863.00;
+        const newChange = Number((newValue - basePrev).toFixed(2));
+        const newChangePercent = Number(((newChange / basePrev) * 100).toFixed(2));
+
+        return {
+          ...idx,
+          value: newValue,
+          change: newChange,
+          changePercent: newChangePercent,
+          lastUpdated: `실시간 ${nowTime}`,
+        };
+      });
+
+      // 2. Select Active Stocks to Tick (Focus on watched symbols + popular stocks)
+      const watchedSymbols = new Set([
+        ...Array.from(this.executionSubscribers.keys()),
+        ...Array.from(this.orderBookSubscribers.keys()),
+      ]);
+
+      const tickedSymbols = new Set<string>();
+
+      this.localStocks = this.localStocks.map(stock => {
+        const isWatched = watchedSymbols.has(stock.symbol);
+        const isPopular = this.popularSymbols.includes(stock.symbol);
+
+        // Watched stocks tick ~75% of cycles, popular ~55%, others ~30%
+        const tickChance = isWatched ? 0.75 : isPopular ? 0.55 : 0.30;
+        if (Math.random() > tickChance) return stock;
+
+        tickedSymbols.add(stock.symbol);
+
+        const step = stock.price >= 100000 ? 500 : (stock.price >= 50000 ? 100 : 50);
+        const dir = Math.random() > 0.48 ? 1 : -1;
+        const delta = step * dir;
+        const newPrice = Math.max(100, stock.price + delta);
+        const prevClose = stock.prevClose || (stock.price - stock.change);
+        const newChange = newPrice - prevClose;
+        const newPct = Number(((newChange / prevClose) * 100).toFixed(2));
+        const tradeQty = Math.floor(Math.random() * 250) + 20;
+
+        return {
+          ...stock,
+          price: newPrice,
+          change: newChange,
+          changePercent: newPct,
+          volume: stock.volume + tradeQty,
+          highPrice: Math.max(stock.highPrice, newPrice),
+          lowPrice: Math.min(stock.lowPrice, newPrice),
+        };
+      });
+
+      // 3. Notify Overall Stock Subscribers
+      this.subscribers.forEach(cb => {
+        try {
+          cb([...this.localStocks]);
+        } catch {}
+      });
+
+      // 4. Notify Execution Tick Subscribers
+      this.executionSubscribers.forEach((callbacks, sym) => {
+        const stock = this.localStocks.find(s => s.symbol === sym);
+        if (!stock) return;
+        const tick = {
+          symbol: stock.symbol,
+          price: stock.price,
+          change: stock.change,
+          changePercent: stock.changePercent,
+          volume: stock.volume,
+          open: stock.openPrice,
+          high: stock.highPrice,
+          low: stock.lowPrice,
+          time: nowTime,
+        };
+        callbacks.forEach(cb => {
+          try {
+            cb(tick);
+          } catch {}
+        });
+      });
+
+      // 5. Notify Order Book Subscribers
+      this.orderBookSubscribers.forEach((callbacks, sym) => {
+        const stock = this.localStocks.find(s => s.symbol === sym);
+        if (!stock) return;
+        const ob = generateOrderBook(stock);
+        callbacks.forEach(cb => {
+          try {
+            cb(ob);
+          } catch {}
+        });
+      });
+    }, 2000);
+  }
+
+  private checkStopSimulationTimer() {
+    const hasSubscribers =
+      this.subscribers.size > 0 ||
+      this.executionSubscribers.size > 0 ||
+      this.orderBookSubscribers.size > 0;
+
+    if (!hasSubscribers && this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
 
   getSourceType(): StockDataSourceType {
     return 'MOCK';
@@ -131,39 +254,16 @@ export class MockStockRepository implements IStockRepository {
 
   subscribeTicks(callback: (stocks: Stock[]) => void): () => void {
     this.subscribers.add(callback);
+    this.startSimulationTimer();
 
-    if (!this.timer) {
-      this.timer = setInterval(() => {
-        this.localStocks = this.localStocks.map(stock => {
-          if (Math.random() > 0.4) return stock;
-          const step = stock.price > 100000 ? 500 : (stock.price > 50000 ? 100 : 50);
-          const dir = Math.random() > 0.48 ? 1 : -1;
-          const delta = step * dir;
-          const newPrice = Math.max(100, stock.price + delta);
-          const newChange = stock.change + delta;
-          const prevClose = stock.prevClose || (stock.price - stock.change);
-          const newPct = Number(((newChange / prevClose) * 100).toFixed(2));
-          return {
-            ...stock,
-            price: newPrice,
-            change: newChange,
-            changePercent: newPct,
-            volume: stock.volume + Math.floor(Math.random() * 300) + 10,
-            highPrice: Math.max(stock.highPrice, newPrice),
-            lowPrice: Math.min(stock.lowPrice, newPrice),
-          };
-        });
-
-        this.subscribers.forEach(cb => cb([...this.localStocks]));
-      }, 3500);
-    }
+    // Immediate callback with current snapshot
+    try {
+      callback([...this.localStocks]);
+    } catch {}
 
     return () => {
       this.subscribers.delete(callback);
-      if (this.subscribers.size === 0 && this.timer) {
-        clearInterval(this.timer);
-        this.timer = null;
-      }
+      this.checkStopSimulationTimer();
     };
   }
 
@@ -171,9 +271,18 @@ export class MockStockRepository implements IStockRepository {
     symbol: string,
     callback: (tick: { symbol: string; price: number; change: number; changePercent: number; volume: number; open: number; high: number; low: number; time: string }) => void
   ): () => void {
-    const unsub = this.subscribeTicks((stocks) => {
-      const target = stocks.find(s => s.symbol === symbol);
-      if (target) {
+    let callbacks = this.executionSubscribers.get(symbol);
+    if (!callbacks) {
+      callbacks = new Set();
+      this.executionSubscribers.set(symbol, callbacks);
+    }
+    callbacks.add(callback);
+    this.startSimulationTimer();
+
+    // Immediate callback with current stock tick
+    const target = this.localStocks.find(s => s.symbol === symbol) || INITIAL_STOCKS.find(s => s.symbol === symbol);
+    if (target) {
+      try {
         callback({
           symbol: target.symbol,
           price: target.price,
@@ -185,10 +294,19 @@ export class MockStockRepository implements IStockRepository {
           low: target.lowPrice,
           time: new Date().toTimeString().slice(0, 8),
         });
-      }
-    });
+      } catch {}
+    }
 
-    return unsub;
+    return () => {
+      const set = this.executionSubscribers.get(symbol);
+      if (set) {
+        set.delete(callback);
+        if (set.size === 0) {
+          this.executionSubscribers.delete(symbol);
+        }
+      }
+      this.checkStopSimulationTimer();
+    };
   }
 
   async getOrderBook(symbol: string): Promise<OrderBook> {
@@ -210,13 +328,31 @@ export class MockStockRepository implements IStockRepository {
     symbol: string,
     callback: (orderBook: OrderBook) => void
   ): () => void {
-    const unsub = this.subscribeTicks((stocks) => {
-      const target = stocks.find(s => s.symbol === symbol);
-      if (target) {
-        callback(generateOrderBook(target));
-      }
-    });
+    let callbacks = this.orderBookSubscribers.get(symbol);
+    if (!callbacks) {
+      callbacks = new Set();
+      this.orderBookSubscribers.set(symbol, callbacks);
+    }
+    callbacks.add(callback);
+    this.startSimulationTimer();
 
-    return unsub;
+    // Immediate callback with current order book
+    const target = this.localStocks.find(s => s.symbol === symbol) || INITIAL_STOCKS.find(s => s.symbol === symbol);
+    if (target) {
+      try {
+        callback(generateOrderBook(target));
+      } catch {}
+    }
+
+    return () => {
+      const set = this.orderBookSubscribers.get(symbol);
+      if (set) {
+        set.delete(callback);
+        if (set.size === 0) {
+          this.orderBookSubscribers.delete(symbol);
+        }
+      }
+      this.checkStopSimulationTimer();
+    };
   }
 }
