@@ -26,6 +26,7 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
   const { user, showToast, exchangeRate } = useApp();
 
   const [orderType, setOrderType] = useState<'BUY' | 'SELL'>(initialType);
+  const [orderKind, setOrderKind] = useState<'LIMIT' | 'MARKET'>('LIMIT');
   const [account, setAccount] = useState<MockAccount | null>(null);
   const [positions, setPositions] = useState<MockPosition[]>([]);
   const [currentHolding, setCurrentHolding] = useState<MockPosition | null>(null);
@@ -40,6 +41,9 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
     provider: string;
     status: 'ok' | 'delayed' | 'error';
     asOf: string;
+    quoteTimestamp?: number;
+    bestAskPrice?: number;
+    bestBidPrice?: number;
   } | null>(null);
 
   const [inputPrice, setInputPrice] = useState<string>('');
@@ -53,6 +57,7 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
       setErrorMsg('');
       setIsSubmitting(false);
       setOrderType(initialType);
+      setOrderKind('LIMIT');
       setQuantity('1');
       setReason('');
 
@@ -79,6 +84,9 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
             provider: '키움 실전 API',
             status: 'ok',
             asOf: new Date().toLocaleTimeString('ko-KR'),
+            quoteTimestamp: Date.now(),
+            bestAskPrice: defaultPrice,
+            bestBidPrice: defaultPrice,
           });
           setInputPrice(String(defaultPrice));
         }
@@ -88,18 +96,31 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
 
   if (!isOpen) return null;
 
-  const numPrice = parseFloat(inputPrice) || 0;
+  const isUSD = quote?.currency === 'USD';
+  const currencySymbol = isUSD ? '$' : '원';
+
+  const bestAsk = quote?.bestAskPrice || quote?.price || defaultPrice || 0;
+  const bestBid = quote?.bestBidPrice || quote?.price || defaultPrice || 0;
+
+  const numPrice = orderKind === 'MARKET'
+    ? (orderType === 'BUY' ? bestAsk : bestBid)
+    : (parseFloat(inputPrice) || 0);
+
   const numQty = parseInt(quantity, 10) || 0;
-  const grossAmount = Math.round(numPrice * numQty);
+  const grossAmount = isUSD ? Number((numPrice * numQty).toFixed(2)) : Math.round(numPrice * numQty);
 
   const commissionRate = account?.commissionRate ?? 0.00015;
   const taxRate = account?.taxRate ?? 0.0018;
 
-  const fee = Math.round(grossAmount * commissionRate);
-  const tax = orderType === 'SELL' ? Math.round(grossAmount * taxRate) : 0;
-  const totalSettled = orderType === 'BUY' ? grossAmount + fee : grossAmount - fee - tax;
+  const fee = isUSD ? Number((grossAmount * commissionRate).toFixed(2)) : Math.round(grossAmount * commissionRate);
+  const tax = orderType === 'SELL' ? (isUSD ? 0 : Math.round(grossAmount * taxRate)) : 0;
+  const totalSettled = orderType === 'BUY' 
+    ? (isUSD ? Number((grossAmount + fee).toFixed(2)) : grossAmount + fee) 
+    : (isUSD ? Number((grossAmount - fee - tax).toFixed(2)) : grossAmount - fee - tax);
 
-  const availableCash = account?.currentCash ?? 0;
+  const availableCash = isUSD 
+    ? (account?.currentCashUsd ?? 100000) 
+    : (account?.currentCash ?? 0);
   const holdingQty = currentHolding?.quantity ?? 0;
 
   // Max buy qty calculation
@@ -119,7 +140,7 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
     }
 
     if (orderType === 'BUY' && totalSettled > availableCash) {
-      setErrorMsg(`가상 현금이 부족합니다. (필요 금액: ${totalSettled.toLocaleString()}원, 보유 현금: ${availableCash.toLocaleString()}원)`);
+      setErrorMsg(`가상 ${isUSD ? '외화(USD)' : '원화(KRW)'} 잔고가 부족합니다. (필요: ${isUSD ? '$' : ''}${totalSettled.toLocaleString()}${isUSD ? '' : '원'}, 보유: ${isUSD ? '$' : ''}${availableCash.toLocaleString()}${isUSD ? '' : '원'})`);
       return;
     }
 
@@ -129,28 +150,51 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
     }
 
     setIsSubmitting(true);
+    const idempotencyKey = `mock_ord_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
     try {
       if (orderType === 'BUY') {
-        await portfolioService.executeMockBuyOrder(user?.id, {
+        const order = await portfolioService.executeMockBuyOrder(user?.id, {
           symbol,
           name: quote?.name || stockName || symbol,
           market: quote?.currency === 'USD' ? 'US' : 'KOSPI',
           currency: quote?.currency || 'KRW',
+          orderKind,
           price: numPrice,
           quantity: numQty,
           reason,
           exchangeRate: exchangeRate?.rate,
+          idempotencyKey,
+          quoteTimestamp: quote?.quoteTimestamp,
         });
-        showToast(`'${quote?.name || symbol}' ${numQty}주 가상 매수 주문이 체결되었습니다.`, 'success');
+
+        if (order.status === 'FILLED') {
+          showToast(`'${quote?.name || symbol}' ${order.quantity}주 전량 매수 체결되었습니다. (${isUSD ? '$' : ''}${order.price.toLocaleString()}${isUSD ? '' : '원'})`, 'success');
+        } else if (order.status === 'PARTIALLY_FILLED') {
+          showToast(`'${quote?.name || symbol}' ${order.filledQuantity}주 부분 체결, ${order.unfilledQuantity}주 미체결 잔량 대기.`, 'info');
+        } else {
+          showToast(`'${quote?.name || symbol}' ${numQty}주 매수 주문이 대기(PENDING) 상태로 안전하게 접수되었습니다.`, 'info');
+        }
       } else {
-        await portfolioService.executeMockSellOrder(user?.id, {
+        const order = await portfolioService.executeMockSellOrder(user?.id, {
           symbol,
+          market: quote?.currency === 'USD' ? 'US' : 'KOSPI',
+          orderKind,
           price: numPrice,
           quantity: numQty,
           reason,
           exchangeRate: exchangeRate?.rate,
+          idempotencyKey,
+          quoteTimestamp: quote?.quoteTimestamp,
         });
-        showToast(`'${quote?.name || symbol}' ${numQty}주 가상 매도 주문이 체결되었습니다.`, 'info');
+
+        if (order.status === 'FILLED') {
+          showToast(`'${quote?.name || symbol}' ${order.quantity}주 전량 매도 체결되었습니다. (${isUSD ? '$' : ''}${order.price.toLocaleString()}${isUSD ? '' : '원'})`, 'info');
+        } else if (order.status === 'PARTIALLY_FILLED') {
+          showToast(`'${quote?.name || symbol}' ${order.filledQuantity}주 부분 매도 체결되었습니다.`, 'info');
+        } else {
+          showToast(`'${quote?.name || symbol}' ${numQty}주 매도 주문이 대기(PENDING) 상태로 안전하게 접수되었습니다.`, 'info');
+        }
       }
 
       onTradeSuccess?.();
@@ -226,6 +270,38 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
           </button>
         </div>
 
+        {/* Order Kind: 지정가 vs 시장가 */}
+        <div className="flex items-center justify-between px-4 py-1 text-xs">
+          <span className="font-bold text-slate-600 dark:text-slate-400">주문 유형</span>
+          <div className="flex rounded-lg bg-slate-100 dark:bg-slate-800 p-0.5 border border-slate-200 dark:border-slate-700">
+            <button
+              type="button"
+              onClick={() => setOrderKind('LIMIT')}
+              className={`px-3 py-1 rounded-md font-bold transition-colors ${
+                orderKind === 'LIMIT'
+                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs'
+                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+              }`}
+            >
+              지정가
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setOrderKind('MARKET');
+                setInputPrice(String(orderType === 'BUY' ? bestAsk : bestBid));
+              }}
+              className={`px-3 py-1 rounded-md font-bold transition-colors ${
+                orderKind === 'MARKET'
+                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs'
+                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+              }`}
+            >
+              시장가 (호가 체결)
+            </button>
+          </div>
+        </div>
+
         {/* Form Body */}
         <form onSubmit={handleExecuteTrade} className="p-4 space-y-3.5">
           {errorMsg && (
@@ -239,11 +315,11 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
           <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs font-mono">
             <div>
               <span className="text-[11px] text-slate-400 block font-sans">
-                {orderType === 'BUY' ? '주문 가능 현금' : '현재 보유 수량'}
+                {orderType === 'BUY' ? `주문 가능 현금 (${isUSD ? 'USD' : 'KRW'})` : '현재 보유 수량'}
               </span>
               <span className="font-bold text-slate-900 dark:text-white text-sm">
                 {orderType === 'BUY'
-                  ? `${availableCash.toLocaleString()}원`
+                  ? `${isUSD ? '$' : ''}${availableCash.toLocaleString()}${isUSD ? '' : '원'}`
                   : `${holdingQty.toLocaleString()}주`}
               </span>
             </div>
@@ -259,7 +335,7 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
                 <div className="text-right">
                   <span className="text-[11px] text-slate-400 block font-sans">평균 매입단가</span>
                   <span className="font-bold text-slate-900 dark:text-white text-sm">
-                    {currentHolding.avgBuyPrice.toLocaleString()}원
+                    {isUSD ? '$' : ''}{currentHolding.avgBuyPrice.toLocaleString()}{isUSD ? '' : '원'}
                   </span>
                 </div>
               )
@@ -271,9 +347,9 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="text-xs font-bold text-slate-700 dark:text-slate-300">
-                  체결 희망가 (원)
+                  {orderKind === 'MARKET' ? `체결 기준가 (${currencySymbol})` : `주문 희망가 (${currencySymbol})`}
                 </label>
-                {quote?.price && (
+                {quote?.price && orderKind === 'LIMIT' && (
                   <button
                     type="button"
                     onClick={() => setInputPrice(String(quote.price))}
@@ -285,11 +361,12 @@ export const MockTradeModal: React.FC<MockTradeModalProps> = ({
               </div>
               <input
                 type="number"
-                min="1"
+                min="0.01"
                 step="any"
-                value={inputPrice}
+                value={orderKind === 'MARKET' ? (orderType === 'BUY' ? bestAsk : bestBid) : inputPrice}
                 onChange={e => setInputPrice(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500"
+                disabled={orderKind === 'MARKET'}
+                className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl text-sm font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-rose-500 disabled:opacity-75 disabled:cursor-not-allowed"
                 required
               />
             </div>

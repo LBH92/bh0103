@@ -98,6 +98,7 @@ export const KiwoomConfigModal: React.FC<KiwoomConfigModalProps> = ({
   const tokenTest = statusData?.diagnostics?.tokenTest;
   const sampleStock = statusData?.diagnostics?.sampleStockTest;
   const sampleUS = statusData?.diagnostics?.sampleUSTest;
+  const parseValidation = statusData?.diagnostics?.parseValidationTest;
   const connectionStatus = statusData?.diagnostics?.connectionStatus;
   const connectionMessage = statusData?.diagnostics?.connectionStatusMessage;
 
@@ -386,8 +387,8 @@ export const KiwoomConfigModal: React.FC<KiwoomConfigModalProps> = ({
               </div>
             </div>
 
-            {/* 3 Detail Checks Grid: Token, Domestic Stock, US Stock */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+            {/* 4 Detail Checks Grid: Token, Domestic Stock, US Stock, Field Parsing */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 text-xs">
               {/* Token Check Card */}
               <div className="p-3 rounded-xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 space-y-1">
                 <span className="text-[10px] text-slate-400 block font-bold">① OAuth 토큰 발급</span>
@@ -428,6 +429,20 @@ export const KiwoomConfigModal: React.FC<KiwoomConfigModalProps> = ({
                 </div>
                 <div className="text-[10px] text-slate-500 dark:text-slate-400 line-clamp-2">
                   {sampleUS?.statusMessage || 'Yahoo Finance 공식 시세 (USD)'}
+                </div>
+              </div>
+
+              {/* Field Parsing Self-Test Card */}
+              <div className="p-3 rounded-xl bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 space-y-1">
+                <span className="text-[10px] text-slate-400 block font-bold">④ 시세 필드 파싱 검증</span>
+                <div className="flex items-center gap-1.5">
+                  <span className={`w-2 h-2 rounded-full ${parseValidation?.success ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                  <span className={`font-bold ${parseValidation?.success ? 'text-emerald-500' : 'text-amber-500'}`}>
+                    {parseValidation?.success ? `4/4 검증 통과` : '파싱 점검 중'}
+                  </span>
+                </div>
+                <div className="text-[10px] text-slate-500 dark:text-slate-400 line-clamp-2">
+                  {parseValidation?.success ? '콤마/음수/종가대체 방어 검증 완료' : '규격 파싱 로직 가동 중'}
                 </div>
               </div>
             </div>

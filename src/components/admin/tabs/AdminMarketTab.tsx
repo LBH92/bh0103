@@ -37,13 +37,26 @@ export const AdminMarketTab: React.FC<AdminMarketTabProps> = ({ callerRole }) =>
   });
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [resilienceData, setResilienceData] = useState<any>(null);
 
   const fetchStatus = () => {
     setIsRefreshing(true);
     adminService.getMarketStatus().then(res => {
       setMarketStatus(res);
-      setIsRefreshing(false);
-    }).catch(() => setIsRefreshing(false));
+    }).catch(() => {});
+
+    fetch('/api/admin/resilience/status', {
+      headers: {
+        'x-user-role': callerRole,
+        'x-admin-role': callerRole,
+      }
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data) setResilienceData(data);
+      })
+      .catch(() => {})
+      .finally(() => setIsRefreshing(false));
   };
 
   useEffect(() => {
@@ -191,6 +204,108 @@ export const AdminMarketTab: React.FC<AdminMarketTabProps> = ({ callerRole }) =>
               코스피·코스닥 사이드카(Sidecar), 서킷브레이커, KRX 중요 공시 자동 감지
             </p>
           </div>
+        </div>
+      </div>
+
+      {/* 4. Live Server Resilience & Error Tracking Diagnostics (Read-Only) */}
+      <div className="bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-xs space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="font-bold text-base text-slate-900 dark:text-white flex items-center gap-2">
+            <Server className="w-5 h-5 text-indigo-500" />
+            <span>핵심 연동 상태 및 최근 장애 복구 진단 (/ready 검증)</span>
+          </h3>
+          <span className="text-[11px] font-mono text-slate-400">
+            {resilienceData?.dependencies?.firebase?.checkedAt ? `검증 시각: ${resilienceData.dependencies.firebase.checkedAt}` : '실시간 진단'}
+          </span>
+        </div>
+
+        {/* Dependency Probes */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {/* Firebase */}
+          <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
+            <div className="flex items-center justify-between text-xs font-bold mb-1">
+              <span className="text-slate-800 dark:text-slate-200">Firebase Firestore</span>
+              <span className={`px-2 py-0.5 rounded text-[10px] ${
+                resilienceData?.dependencies?.firebase?.status === 'CONNECTED'
+                  ? 'bg-emerald-500/10 text-emerald-500'
+                  : 'bg-rose-500/10 text-rose-500'
+              }`}>
+                {resilienceData?.dependencies?.firebase?.status || 'PROBING...'}
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              {resilienceData?.dependencies?.firebase?.message || '연결 상태 점검 중'}
+            </p>
+          </div>
+
+          {/* Kiwoom API */}
+          <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
+            <div className="flex items-center justify-between text-xs font-bold mb-1">
+              <span className="text-slate-800 dark:text-slate-200">키움 Open API 게이트웨이</span>
+              <span className={`px-2 py-0.5 rounded text-[10px] ${
+                resilienceData?.dependencies?.kiwoom?.status === 'CONNECTED' || resilienceData?.dependencies?.kiwoom?.status === 'CONFIGURED'
+                  ? 'bg-indigo-500/10 text-indigo-500'
+                  : 'bg-amber-500/10 text-amber-500'
+              }`}>
+                {resilienceData?.dependencies?.kiwoom?.status || 'UNCONFIGURED'}
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              {resilienceData?.dependencies?.kiwoom?.message || '키 설정 대기'}
+            </p>
+          </div>
+
+          {/* Market Pipeline */}
+          <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
+            <div className="flex items-center justify-between text-xs font-bold mb-1">
+              <span className="text-slate-800 dark:text-slate-200">시세 수신 파이프라인</span>
+              <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/10 text-emerald-500 font-bold">
+                {resilienceData?.dependencies?.marketDataPipeline?.status || 'ONLINE'}
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              최종 정상 갱신: <strong>{resilienceData?.dependencies?.marketDataPipeline?.lastSuccessAt || marketStatus.lastDataFetch}</strong>
+            </p>
+          </div>
+        </div>
+
+        {/* Recent Errors Journal Table */}
+        <div className="mt-4">
+          <h4 className="text-xs font-bold text-slate-700 dark:text-slate-300 mb-2 flex items-center justify-between">
+            <span>최근 서버 오류 및 API 장애 요약 (민감정보 마스킹 완료)</span>
+            <span className="text-[11px] text-slate-400 font-mono">
+              총 {resilienceData?.recentErrors?.length || 0}건 기록됨
+            </span>
+          </h4>
+
+          {resilienceData?.recentErrors && resilienceData.recentErrors.length > 0 ? (
+            <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden text-xs">
+              <table className="w-full text-left">
+                <thead className="bg-slate-50 dark:bg-slate-800/50 text-[11px] text-slate-400 font-semibold border-b border-slate-200 dark:border-slate-800">
+                  <tr>
+                    <th className="py-2 px-3">발생 시각</th>
+                    <th className="py-2 px-3">유형</th>
+                    <th className="py-2 px-3">상태코드</th>
+                    <th className="py-2 px-3">내용 (안전 정제됨)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 font-mono text-[11px]">
+                  {resilienceData.recentErrors.slice(0, 5).map((err: any) => (
+                    <tr key={err.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
+                      <td className="py-2 px-3 text-slate-400 whitespace-nowrap">{err.timestamp.split('T')[1].split('.')[0]}</td>
+                      <td className="py-2 px-3 font-bold text-rose-500">{err.type}</td>
+                      <td className="py-2 px-3 text-slate-500">{err.statusCode || '-'}</td>
+                      <td className="py-2 px-3 font-sans text-slate-700 dark:text-slate-300 truncate max-w-md">{err.message}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-xl text-center text-xs text-emerald-600 dark:text-emerald-400 font-semibold">
+              현재 감지된 비정상 오류 및 API 타임아웃 장애가 없습니다. (전체 파이프라인 정상 가동 중)
+            </div>
+          )}
         </div>
       </div>
 

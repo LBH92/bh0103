@@ -11,7 +11,8 @@ import {
   orderBy, 
   limit, 
   onSnapshot,
-  Timestamp 
+  Timestamp,
+  serverTimestamp 
 } from 'firebase/firestore';
 import { db, auth, OperationType, handleFirestoreError } from './firebase';
 import { UserProfile, CommunityPost, CommentItem, ChatMessage, PriceAlert, AdminReport, ReportItem, ChatRoomInfo } from '../types';
@@ -234,44 +235,57 @@ export const firebaseRepository = {
     }
   },
 
-  subscribePosts(callback: (posts: CommunityPost[]) => void): () => void {
+  subscribePosts(
+    callback: (posts: CommunityPost[]) => void,
+    errorCallback?: (error: any) => void
+  ): () => void {
     try {
       const q = query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(100));
-      return onSnapshot(q, snap => {
-        const list: CommunityPost[] = [];
-        snap.forEach(docSnap => {
-          const d = docSnap.data();
-          list.push({
-            id: docSnap.id,
-            author: {
-              id: d.authorId,
-              name: d.authorName || '투자자',
-              avatar: d.authorAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80',
-              badge: d.authorBadge || '정회원',
-              tier: d.authorTier || '골드',
-            },
-            category: d.category || 'free',
-            title: d.title,
-            content: d.content,
-            symbol: d.stockSymbol,
-            symbolName: d.stockName || d.stockSymbolName,
-            likes: d.likeCount || 0,
-            likedBy: d.likedBy || [],
-            views: d.viewCount || 0,
-            commentsCount: d.commentCount || (d.comments ? d.comments.length : 0),
-            createdAt: d.createdAt ? (d.createdAt.length < 20 ? d.createdAt : new Date(d.createdAt).toLocaleDateString('ko-KR')) : '방금 전',
-            updatedAt: d.updatedAt,
-            tags: d.tags || [],
-            isHot: (d.likeCount || 0) >= 10,
-            comments: d.comments || [],
+      return onSnapshot(
+        q,
+        snap => {
+          const list: CommunityPost[] = [];
+          snap.forEach(docSnap => {
+            const d = docSnap.data();
+            list.push({
+              id: docSnap.id,
+              author: {
+                id: d.authorId || 'anon',
+                name: d.authorName || '투자자',
+                avatar: d.authorAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80',
+                badge: d.authorBadge || '정회원',
+                tier: d.authorTier || '골드',
+              },
+              category: d.category || 'free',
+              title: d.title || '제목 없음',
+              content: d.content || '',
+              symbol: d.stockSymbol,
+              symbolName: d.stockName || d.stockSymbolName,
+              likes: d.likeCount || 0,
+              likedBy: d.likedBy || [],
+              views: d.viewCount || 0,
+              commentsCount: d.commentCount || (d.comments ? d.comments.length : 0),
+              createdAt: d.createdAt ? (d.createdAt.length < 20 ? d.createdAt : new Date(d.createdAt).toLocaleDateString('ko-KR')) : '방금 전',
+              updatedAt: d.updatedAt,
+              tags: d.tags || [],
+              isHot: (d.likeCount || 0) >= 10,
+              comments: d.comments || [],
+            });
           });
-        });
-        callback(list);
-      }, err => {
-        console.warn('subscribePosts error:', err);
-      });
+          callback(list);
+        },
+        err => {
+          console.warn('subscribePosts onSnapshot error:', err);
+          if (errorCallback) {
+            errorCallback(err);
+          }
+        }
+      );
     } catch (err) {
       console.warn('subscribePosts exception:', err);
+      if (errorCallback) {
+        errorCallback(err);
+      }
       return () => {};
     }
   },
@@ -559,18 +573,34 @@ export const firebaseRepository = {
     }
   },
 
-  subscribeChat(roomId: string, callback: (messages: ChatMessage[]) => void): () => void {
+  subscribeChat(
+    roomId: string, 
+    callback: (messages: ChatMessage[]) => void, 
+    messageLimit: number = 50,
+    onError?: (err: any) => void
+  ): () => void {
     try {
       const q = query(
         collection(db, 'chatMessages'),
         where('roomId', '==', roomId),
-        limit(100)
+        limit(messageLimit)
       );
       return onSnapshot(q, snap => {
         const list: ChatMessage[] = [];
         snap.forEach(docSnap => {
           const d = docSnap.data();
-          const time = d.createdAt ? new Date(d.createdAt).toTimeString().split(' ')[0] : '12:00:00';
+          let time = '12:00:00';
+          let sortTime = 0;
+          if (d.serverCreatedAt && typeof d.serverCreatedAt.toMillis === 'function') {
+            const date = d.serverCreatedAt.toDate();
+            time = date.toTimeString().split(' ')[0];
+            sortTime = d.serverCreatedAt.toMillis();
+          } else if (d.createdAt) {
+            const date = new Date(d.createdAt);
+            time = date.toTimeString().split(' ')[0];
+            sortTime = date.getTime();
+          }
+
           list.push({
             id: docSnap.id,
             roomId: d.roomId,
@@ -584,16 +614,19 @@ export const firebaseRepository = {
             timestamp: time,
             sentiment: d.sentiment,
             likes: 0,
-          });
+            _sortTime: sortTime,
+          } as any);
         });
-        // Sort chronologically ascending in JS memory
-        list.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+        // Sort chronologically ascending
+        list.sort((a: any, b: any) => (a._sortTime || 0) - (b._sortTime || 0));
         callback(list);
       }, err => {
         console.warn('Firestore onSnapshot error:', err);
+        if (onError) onError(err);
       });
     } catch (err) {
       console.warn('subscribeChat exception:', err);
+      if (onError) onError(err);
       return () => {};
     }
   },
@@ -612,6 +645,7 @@ export const firebaseRepository = {
         content: msg.message,
         sentiment: msg.sentiment || 'neutral',
         createdAt: new Date().toISOString(),
+        serverCreatedAt: serverTimestamp(),
         status: 'active',
       });
       return docRef.id;

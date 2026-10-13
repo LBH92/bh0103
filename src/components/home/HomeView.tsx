@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   TrendingUp, 
   TrendingDown, 
   Flame, 
   Zap, 
   AlertOctagon, 
+  ShieldAlert,
   ChevronRight, 
   Clock, 
   Bookmark, 
@@ -167,8 +168,26 @@ export const HomeView: React.FC = () => {
   // 10. 사용자의 관심종목
   const watchlistStocks = stocks.filter(s => watchlist.includes(s.symbol));
 
-  // Active Market Events (사이드카/서킷브레이커 등)
+  // Active Market Events (실시간 긴급 발동 중인 경우만 표시)
   const activeEvents = marketEvents.filter(e => e.active);
+
+  // 한국거래소(KRX) 공식 사이드카 주요 이벤트 기록 (중복·미래일자 방지 및 최신 발동순 정렬)
+  const sidecarEvents = useMemo(() => {
+    const nowMs = Date.now();
+    return marketEvents
+      .filter(e => {
+        if (e.type !== 'sidecar') return false;
+        const triggerTime = new Date(e.triggerDateTime?.replace(' KST', '') || e.timestamp).getTime();
+        // 미래 날짜 방지
+        if (triggerTime && triggerTime > nowMs) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const timeA = new Date(a.triggerDateTime?.replace(' KST', '') || a.timestamp).getTime() || 0;
+        const timeB = new Date(b.triggerDateTime?.replace(' KST', '') || b.timestamp).getTime() || 0;
+        return timeB - timeA;
+      });
+  }, [marketEvents]);
 
   // Latest Community Posts
   const communityPosts = storageService.getPosts().slice(0, 5);
@@ -286,7 +305,7 @@ export const HomeView: React.FC = () => {
         </div>
       </div>
 
-      {/* 9. 긴급 시장 이벤트 (사이드카 / 서킷브레이커 등) */}
+      {/* 9-1. 긴급 시장 조치 (장중 실제 발동 중인 경우만 경보 배너) */}
       {activeEvents.length > 0 && (
         <div className="space-y-2">
           {activeEvents.map(evt => (
@@ -355,6 +374,99 @@ export const HomeView: React.FC = () => {
             </div>
           ))}
         </div>
+      )}
+
+      {/* 9-2. 한국거래소(KRX) 코스피·코스닥 사이드카 주요 이벤트 기록 카드 */}
+      {sidecarEvents.length > 0 && (
+        <section aria-label="사이드카 주요 이벤트 카드" className="bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl p-4 sm:p-5 shadow-sm space-y-3.5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 text-amber-500 shrink-0" />
+                <h3 className="text-sm sm:text-base font-black text-slate-900 dark:text-white">
+                  한국거래소(KRX) 코스피·코스닥 사이드카 주요 이벤트
+                </h3>
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                선물 프로그램 매매호가 효력정지(Sidecar) 공식 발동 기록 대조 (최근순 정렬)
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap text-[11px] font-mono">
+              <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 font-semibold">
+                현재 장중: 미발동 (정상 거래 중)
+              </span>
+              <span className="px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                마지막 확인: 2026.10.11 18:40 KST
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {sidecarEvents.map(evt => (
+              <div
+                key={evt.id}
+                onClick={() => {
+                  setSelectedMarketEvent(evt);
+                  setIsMarketEventModalOpen(true);
+                }}
+                className="p-3.5 sm:p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-900/40 hover:border-amber-500/40 transition-all cursor-pointer flex flex-col justify-between gap-3 group hover:shadow-xs"
+              >
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="px-2 py-0.5 text-[10px] font-black rounded font-mono bg-slate-200 dark:bg-slate-800 text-slate-800 dark:text-slate-200">
+                        {evt.market}
+                      </span>
+                      <span className={`px-2 py-0.5 text-[10px] font-bold rounded font-mono ${
+                        evt.sidecarType === 'BUY'
+                          ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20'
+                          : 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20'
+                      }`}>
+                        {evt.sidecarType === 'BUY' ? '매수 사이드카 (BUY)' : '매도 사이드카 (SELL)'}
+                      </span>
+                      <span className="px-1.5 py-0.5 text-[10px] rounded text-slate-500 dark:text-slate-400 font-sans">
+                        {evt.active ? '실시간 발동 중' : '과거 공식 기록'}
+                      </span>
+                    </div>
+
+                    <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                      {evt.triggerDateTime || evt.timestamp}
+                    </span>
+                  </div>
+
+                  <h4 className="font-bold text-sm text-slate-900 dark:text-white group-hover:text-amber-500 transition-colors">
+                    {evt.title}
+                  </h4>
+
+                  <p className="text-xs text-slate-600 dark:text-slate-300 line-clamp-2 leading-relaxed">
+                    {evt.description}
+                  </p>
+                </div>
+
+                <div className="pt-2 border-t border-slate-200/50 dark:border-slate-800 flex items-center justify-between text-[11px]">
+                  <div className="flex items-center gap-1.5 text-slate-400 font-mono">
+                    <Globe className="w-3.5 h-3.5 text-slate-400" />
+                    <span>출처: KRX (data.krx.co.kr)</span>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedMarketEvent(evt);
+                      setIsMarketEventModalOpen(true);
+                    }}
+                    className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 hover:opacity-90 transition-opacity flex items-center gap-1 cursor-pointer"
+                  >
+                    <span>상세 확인</span>
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
       )}
 
       {/* Stock Insight 실시간 시장 모니터링 레이더 */}
@@ -1262,6 +1374,14 @@ export const HomeView: React.FC = () => {
           </div>
         </div>
       </section>
+
+      {/* 시장 이벤트 상세 모달 */}
+      <MarketEventDetailModal
+        isOpen={isMarketEventModalOpen}
+        onClose={() => setIsMarketEventModalOpen(false)}
+        event={selectedMarketEvent}
+        onNavigateToStock={navigateToStock}
+      />
     </div>
   );
 };

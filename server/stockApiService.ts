@@ -8,6 +8,7 @@
 
 import { CandleData, Stock, StockIndex, ExchangeRate } from '../src/types';
 import { kiwoomApiService } from './kiwoomApiService';
+import { serverResilienceService } from './serverResilienceService';
 
 interface ServerCacheEntry<T> {
   data: T;
@@ -159,14 +160,20 @@ export async function fetchRealStockDataWithSource(symbol: string): Promise<Fetc
       ? (item?.ticker || symbol.toUpperCase())
       : (item?.ticker || `${symbol}.${stockMarket === 'KOSDAQ' ? 'KQ' : 'KS'}`);
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooTicker)}?interval=1d&range=3mo`;
-    const res = await fetch(url, {
+    const res = await serverResilienceService.resilientFetch(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json',
       },
+    }, {
+      maxRetries: 2,
+      baseDelayMs: 300,
+      timeoutMs: 4000,
+      serviceName: `YahooFinance(${symbol})`,
     });
 
     if (res.ok) {
+      serverResilienceService.markMarketDataSuccess();
       const json = await res.json();
       const result = json.chart?.result?.[0];
       if (result) {

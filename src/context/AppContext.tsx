@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
 import { auth } from '../services/firebase';
 import { firebaseRepository } from '../services/firebaseRepository';
@@ -78,6 +78,13 @@ interface AppContextType {
   // Search Modal
   isSearchOpen: boolean;
   setIsSearchOpen: (open: boolean) => void;
+
+  // Side Chat Panel State
+  isSideChatOpen: boolean;
+  setIsSideChatOpen: (open: boolean) => void;
+  toggleSideChat: () => void;
+  unreadChatCount: number;
+  setUnreadChatCount: React.Dispatch<React.SetStateAction<number>>;
 
   // Toast
   toasts: ToastMessage[];
@@ -586,6 +593,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  // Side Chat Panel State (defaults to open on desktop screens, persistent via localStorage)
+  const [isSideChatOpen, setIsSideChatOpen] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('bd_side_chat_open');
+      if (saved !== null) return saved === 'true';
+      // Default to open on desktop viewport (>= 1280px)
+      return typeof window !== 'undefined' ? window.innerWidth >= 1280 : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const [unreadChatCount, setUnreadChatCount] = useState<number>(0);
+
+  const toggleSideChat = useCallback(() => {
+    setIsSideChatOpen(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('bd_side_chat_open', String(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
   // Toasts
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
@@ -695,6 +726,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setIsAuthModalOpen,
         isSearchOpen,
         setIsSearchOpen,
+        isSideChatOpen,
+        setIsSideChatOpen,
+        toggleSideChat,
+        unreadChatCount,
+        setUnreadChatCount,
         toasts,
         showToast,
         removeToast,

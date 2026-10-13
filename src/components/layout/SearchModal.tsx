@@ -222,7 +222,7 @@ export const SearchModal: React.FC = () => {
                               {stock.name}
                             </span>
 
-                            {/* 3. 시장 */}
+                            {/* 3. 시장 / 거래소 / 상품 유형 */}
                             <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
                               stock.market === 'US'
                                 ? 'bg-purple-500/10 text-purple-500 border border-purple-500/20'
@@ -230,12 +230,27 @@ export const SearchModal: React.FC = () => {
                                 ? 'bg-indigo-500/10 text-indigo-500 border border-indigo-500/20'
                                 : 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'
                             }`}>
-                              {stock.market}
+                              {stock.market === 'US' ? (stock.exchange || 'US') : stock.market}
                             </span>
+
+                            {stock.productType && (
+                              <span className={`text-[9px] font-bold px-1 py-0.2 rounded border ${
+                                stock.productType === 'ETF'
+                                  ? 'bg-amber-500/10 text-amber-500 border-amber-500/20'
+                                  : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700'
+                              }`}>
+                                {stock.productType === 'ETF' ? 'ETF' : '보통주'}
+                              </span>
+                            )}
                           </div>
 
                           <div className="flex items-center gap-1.5 text-xs text-slate-400 mt-0.5">
                             <span>{stock.sector}</span>
+                            {stock.nameEn && stock.nameEn !== stock.name && (
+                              <span className="font-mono text-[10px] text-slate-400 truncate max-w-[150px]">
+                                ({stock.nameEn})
+                              </span>
+                            )}
                             {isChosungSearch && (
                               <span className="font-mono text-rose-500 dark:text-rose-400 text-[11px]">
                                 · 초성: {chosung}

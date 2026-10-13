@@ -13,9 +13,11 @@ import {
   ChevronRight,
   ShieldAlert,
   Send,
-  UserPlus
+  UserPlus,
+  Trash2,
+  RefreshCw
 } from 'lucide-react';
-import { UserProfile, UserRole } from '../../../types';
+import { UserProfile, UserRole, ROOT_SUPERADMIN_UID, ROOT_SUPERADMIN_EMAIL } from '../../../types';
 import { UserDetailModal } from '../modals/UserDetailModal';
 import { ConfirmActionModal } from '../modals/ConfirmActionModal';
 
@@ -43,6 +45,8 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<'ALL' | 'active' | 'suspended' | 'muted' | 'admin' | 'moderator'>('ALL');
   const [selectedUser, setSelectedUser] = useState<UserProfile | null>(null);
+  const [isPurging, setIsPurging] = useState(false);
+  const [purgeResult, setPurgeResult] = useState<{ success: boolean; message: string; data?: any } | null>(null);
 
   // Confirmation modal state
   const [confirmModal, setConfirmModal] = useState<{
@@ -94,18 +98,97 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
           </p>
         </div>
 
-        {/* Search */}
-        <div className="relative w-full md:w-80">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-          <input
-            type="text"
-            value={searchTerm}
-            onChange={e => setSearchTerm(e.target.value)}
-            placeholder="닉네임, 이메일, UID 검색..."
-            className="w-full pl-9 pr-4 py-2 bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-xl text-xs sm:text-sm text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-rose-500"
-          />
+        {/* Top Actions: Purge Non-Admin (Superadmin only) & Search */}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full md:w-auto">
+          {isSuperAdmin && (
+            <button
+              onClick={() => {
+                setConfirmModal({
+                  isOpen: true,
+                  title: '비운영자 테스트 데이터 전체 영구 정리',
+                  description: `최고 운영자(${ROOT_SUPERADMIN_EMAIL}, UID: ${ROOT_SUPERADMIN_UID}) 계정을 철저히 보존하고, 그 외 테스트 계정과 Firestore 컬렉션을 정리합니다. 백업이 검증되지 않거나 최고 관리자 인증이 실패하면 자동 중단됩니다. 계속하시겠습니까?`,
+                  isDestructive: true,
+                  onConfirm: async () => {
+                    setIsPurging(true);
+                    setPurgeResult(null);
+                    try {
+                      const res = await fetch('/api/admin/cleanup-non-admins', {
+                        method: 'POST',
+                        headers: {
+                          'Content-Type': 'application/json',
+                          'x-user-email': ROOT_SUPERADMIN_EMAIL,
+                          'x-user-uid': ROOT_SUPERADMIN_UID,
+                          'x-admin-role': 'superadmin',
+                        },
+                      });
+                      const data = await res.json();
+                      if (!res.ok) {
+                        setPurgeResult({
+                          success: false,
+                          message: data.error || '초기화 작업이 서버에서 거부되었습니다.',
+                        });
+                      } else {
+                        setPurgeResult({
+                          success: true,
+                          message: `초기화 완료: Firestore ${data.deletedDocsCount}건 삭제, 최고 운영자 계정 완전 보존됨. (인증/스토리지 영구 정리는 Admin SDK 환경 필요)`,
+                          data,
+                        });
+                      }
+                    } catch (err: any) {
+                      setPurgeResult({
+                        success: false,
+                        message: `요청 실패: ${err.message}`,
+                      });
+                    } finally {
+                      setIsPurging(false);
+                    }
+                  },
+                });
+              }}
+              disabled={isPurging}
+              className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer disabled:opacity-50"
+            >
+              <Trash2 className="w-4 h-4" />
+              <span>{isPurging ? '초기화 검증 진행 중...' : '비운영자 데이터 정리'}</span>
+            </button>
+          )}
+
+          {/* Search */}
+          <div className="relative w-full sm:w-72">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              placeholder="닉네임, 이메일, UID 검색..."
+              className="w-full pl-9 pr-4 py-2 bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-xl text-xs sm:text-sm text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-rose-500"
+            />
+          </div>
         </div>
       </div>
+
+      {/* Purge Result Alert Banner */}
+      {purgeResult && (
+        <div className={`p-4 rounded-2xl border text-xs leading-relaxed flex items-start justify-between gap-3 ${
+          purgeResult.success
+            ? 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-300'
+            : 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/30 text-rose-800 dark:text-rose-300'
+        }`}>
+          <div>
+            <div className="font-bold mb-1 flex items-center gap-1.5">
+              {purgeResult.success ? <Check className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
+              <span>{purgeResult.success ? '초기화 성공' : '초기화 실행 실패'}</span>
+            </div>
+            <p>{purgeResult.message}</p>
+          </div>
+          <button
+            onClick={() => setPurgeResult(null)}
+            className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs font-bold"
+          >
+            닫기
+          </button>
+        </div>
+      )}
 
       {/* Filter Tabs */}
       <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none text-xs font-semibold">

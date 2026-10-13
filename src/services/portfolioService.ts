@@ -38,11 +38,14 @@ import {
   MockAccount,
   MockPosition,
   MockOrder,
+  MockOrderFill,
   TradingFeeSettings,
-  Stock
+  Stock,
+  OrderBook
 } from '../types';
 import { stockRepository } from './stockRepository';
 import { globalMarketClient } from './globalMarketClient';
+import { validateMarketTradingHours } from '../utils/marketHours';
 
 const STORAGE_KEYS = {
   VIRTUAL_HOLDINGS: 'bd_virtual_holdings',
@@ -52,9 +55,13 @@ const STORAGE_KEYS = {
   MOCK_ORDERS: 'bd_mock_orders',
 };
 
-const DEFAULT_INITIAL_CASH = 100000000; // 1억 원
+const DEFAULT_INITIAL_CASH = 100000000; // 1억 원 (KRW)
+const DEFAULT_INITIAL_CASH_USD = 100000; // 10만 달러 (USD)
 const DEFAULT_COMMISSION_RATE = 0.00015; // 0.015%
 const DEFAULT_TAX_RATE = 0.0018; // 0.18%
+
+// In-Memory Idempotency Cache to prevent duplicate submissions & double clicks
+const idempotencyCache = new Map<string, { order: MockOrder; timestamp: number }>();
 
 // LocalStorage helpers for guest fallback
 function loadLocal<T>(key: string, defaultValue: T): T {
@@ -410,6 +417,8 @@ export const portfolioService = {
       uid: uid || 'guest',
       initialBalance: DEFAULT_INITIAL_CASH,
       currentCash: DEFAULT_INITIAL_CASH,
+      initialBalanceUsd: DEFAULT_INITIAL_CASH_USD,
+      currentCashUsd: DEFAULT_INITIAL_CASH_USD,
       commissionRate: DEFAULT_COMMISSION_RATE,
       taxRate: DEFAULT_TAX_RATE,
       createdAt: new Date().toISOString(),
@@ -417,21 +426,39 @@ export const portfolioService = {
     };
 
     if (!uid) {
-      return loadLocal<MockAccount>(STORAGE_KEYS.MOCK_ACCOUNT, defaultAcc);
+      const local = loadLocal<MockAccount>(STORAGE_KEYS.MOCK_ACCOUNT, defaultAcc);
+      return {
+        ...defaultAcc,
+        ...local,
+        currentCashUsd: local.currentCashUsd ?? DEFAULT_INITIAL_CASH_USD,
+        initialBalanceUsd: local.initialBalanceUsd ?? DEFAULT_INITIAL_CASH_USD,
+      };
     }
 
     try {
       const ref = doc(db, 'mockAccounts', uid);
       const snap = await getDoc(ref);
       if (snap.exists()) {
-        return snap.data() as MockAccount;
+        const data = snap.data() as MockAccount;
+        return {
+          ...defaultAcc,
+          ...data,
+          currentCashUsd: data.currentCashUsd ?? DEFAULT_INITIAL_CASH_USD,
+          initialBalanceUsd: data.initialBalanceUsd ?? DEFAULT_INITIAL_CASH_USD,
+        };
       }
       // Initialize account for user
       await setDoc(ref, defaultAcc);
       return defaultAcc;
     } catch (err) {
       console.warn('[portfolioService] getMockAccount error, using local fallback:', err);
-      return loadLocal<MockAccount>(`${STORAGE_KEYS.MOCK_ACCOUNT}_${uid}`, defaultAcc);
+      const local = loadLocal<MockAccount>(`${STORAGE_KEYS.MOCK_ACCOUNT}_${uid}`, defaultAcc);
+      return {
+        ...defaultAcc,
+        ...local,
+        currentCashUsd: local.currentCashUsd ?? DEFAULT_INITIAL_CASH_USD,
+        initialBalanceUsd: local.initialBalanceUsd ?? DEFAULT_INITIAL_CASH_USD,
+      };
     }
   },
 
@@ -468,6 +495,8 @@ export const portfolioService = {
       uid: uid || 'guest',
       initialBalance: DEFAULT_INITIAL_CASH,
       currentCash: DEFAULT_INITIAL_CASH,
+      initialBalanceUsd: DEFAULT_INITIAL_CASH_USD,
+      currentCashUsd: DEFAULT_INITIAL_CASH_USD,
       commissionRate: DEFAULT_COMMISSION_RATE,
       taxRate: DEFAULT_TAX_RATE,
       createdAt: now,
@@ -543,7 +572,7 @@ export const portfolioService = {
     }
   },
 
-  // 모의 매수 주문 실행 (원자적 검증 및 트랜잭션 처리)
+  // 모의 매수 주문 실행 (실제 호가 10단계 매수 잔량 순차 소진 Walking the book, 통화 분리, 거래시간 및 신선도 검증)
   async executeMockBuyOrder(
     uid: string | undefined,
     params: {
@@ -551,14 +580,26 @@ export const portfolioService = {
       name: string;
       market: string;
       currency?: 'KRW' | 'USD';
+      orderKind?: 'MARKET' | 'LIMIT';
       price: number;
       quantity: number;
       reason?: string;
       exchangeRate?: number;
+      idempotencyKey?: string;
+      quoteTimestamp?: number | string;
     }
   ): Promise<MockOrder> {
-    const { symbol, name, market, price, quantity, reason } = params;
+    const { symbol, name, market, price, quantity, reason, orderKind = 'LIMIT', idempotencyKey, quoteTimestamp } = params;
     const currency = params.currency || (market === 'US' || market === 'GLOBAL' ? 'USD' : 'KRW');
+    const isUSD = currency === 'USD';
+
+    // 0. Idempotency Check (중복 주문 및 더블 클릭 방지)
+    if (idempotencyKey && idempotencyCache.has(idempotencyKey)) {
+      const cached = idempotencyCache.get(idempotencyKey)!;
+      if (Date.now() - cached.timestamp < 10000) {
+        return cached.order;
+      }
+    }
 
     if (price <= 0 || !Number.isFinite(price)) {
       throw new Error('유효한 주문 가격을 입력해주세요.');
@@ -567,9 +608,102 @@ export const portfolioService = {
       throw new Error('주문 수량은 1주 이상의 정수여야 합니다.');
     }
 
+    // 1. 시세 신선도 검증 (1분 이상 지연된 stale 데이터 체결 금지)
+    if (quoteTimestamp) {
+      const quoteTime = typeof quoteTimestamp === 'number' ? quoteTimestamp : new Date(quoteTimestamp).getTime();
+      if (!isNaN(quoteTime)) {
+        const ageMs = Date.now() - quoteTime;
+        if (ageMs > 60000) {
+          throw new Error(`시세 데이터가 1분 이상 지연되어 체결할 수 없습니다. (${Math.round(ageMs / 1000)}초 전 시세). 실시간 시세를 새로고침해주세요.`);
+        }
+      }
+    }
+
+    // 2. 거래시간 검증: KRX(09:00~15:30), US(09:30~16:00 EST/EDT)
+    const tradingHours = validateMarketTradingHours(market, orderKind);
+    if (!tradingHours.canExecuteNow && !tradingHours.canQueuePending) {
+      throw new Error(tradingHours.message);
+    }
+    const isPendingOrder = !tradingHours.canExecuteNow;
+
     const now = new Date().toISOString();
     const orderId = `morder_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const positionDocId = uid ? `${uid}_${symbol}` : `pos_${symbol}`;
+
+    // 3. 실제 호가창 조회 및 10단계 매도 잔량 순차 소진 (Walking the book)
+    let orderBook: OrderBook | null = null;
+    try {
+      orderBook = await stockRepository.getOrderBook(symbol);
+    } catch {
+      orderBook = null;
+    }
+
+    const rawAsks = (orderBook?.asks || []).filter(a => a.price > 0);
+    const sortedAsks = [...rawAsks].sort((a, b) => a.price - b.price);
+    const bestAskPrice = sortedAsks[0]?.price || orderBook?.bestAskPrice || price;
+
+    let fills: MockOrderFill[] = [];
+    let filledQty = 0;
+    let unfilledQty = quantity;
+    let totalExecutedAmount = 0;
+    let executionStatus: 'FILLED' | 'PARTIALLY_FILLED' | 'PENDING' = 'PENDING';
+
+    if (isPendingOrder) {
+      // 거래시간 외 또는 정규장 전 지정가 대기 접수
+      executionStatus = 'PENDING';
+      filledQty = 0;
+      unfilledQty = quantity;
+    } else if (orderKind === 'LIMIT' && price < bestAskPrice) {
+      // 지정가 매수 희망가가 최우선 매도호가(Ask 1)보다 낮아 체결 불가 -> 대기(PENDING) 등록
+      executionStatus = 'PENDING';
+      filledQty = 0;
+      unfilledQty = quantity;
+    } else {
+      // 시장가 또는 지정가 체결 조건 충족 (호가창 순차 소진)
+      // 호가 조회 실패, 잔량 없음, 또는 유효하지 않은 호가인 경우 가짜 입력 가격으로 체결하지 않고 미체결(PENDING) 유지 또는 거절
+      if (sortedAsks.length > 0) {
+        for (let i = 0; i < sortedAsks.length; i++) {
+          const ask = sortedAsks[i];
+          // 지정가 매수는 매도호가가 지정가 이하일 때만 체결
+          if (orderKind === 'LIMIT' && ask.price > price) break;
+          // 호가 잔량이 0 이하이면 체결하지 않음
+          if (ask.volume <= 0) continue;
+
+          const availableVol = ask.volume;
+          const takeQty = Math.min(unfilledQty, availableVol);
+          if (takeQty > 0) {
+            fills.push({
+              price: ask.price,
+              quantity: takeQty,
+              amount: takeQty * ask.price,
+              level: i + 1,
+              executedAt: now,
+            });
+            totalExecutedAmount += takeQty * ask.price;
+            filledQty += takeQty;
+            unfilledQty -= takeQty;
+          }
+          if (unfilledQty === 0) break;
+        }
+      } else {
+        // 호가 데이터 미수신 또는 유효 잔량 부재: 임의 입력가로 체결하지 않고 시장가는 거절, 지정가는 대기(PENDING) 유지
+        if (orderKind === 'MARKET') {
+          throw new Error('실시간 매도 호가 잔량을 확인할 수 없어 시장가 주문이 거절되었습니다. 호가창을 새로고침해주세요.');
+        }
+        executionStatus = 'PENDING';
+        filledQty = 0;
+        unfilledQty = quantity;
+      }
+
+      if (sortedAsks.length > 0) {
+        executionStatus = unfilledQty === 0 ? 'FILLED' : filledQty > 0 ? 'PARTIALLY_FILLED' : 'PENDING';
+      }
+    }
+
+    const avgFilledPrice = filledQty > 0
+      ? (isUSD ? Number((totalExecutedAmount / filledQty).toFixed(2)) : Math.round(totalExecutedAmount / filledQty))
+      : price;
+    const executedGross = totalExecutedAmount;
 
     if (uid) {
       // Use Firestore ACID runTransaction
@@ -578,13 +712,15 @@ export const portfolioService = {
         await runTransaction(db, async (tx) => {
           const accRef = doc(db, 'mockAccounts', uid);
           const accSnap = await tx.get(accRef);
-          
+
           let accountData: MockAccount;
           if (!accSnap.exists()) {
             accountData = {
               uid,
               initialBalance: DEFAULT_INITIAL_CASH,
               currentCash: DEFAULT_INITIAL_CASH,
+              initialBalanceUsd: DEFAULT_INITIAL_CASH_USD,
+              currentCashUsd: DEFAULT_INITIAL_CASH_USD,
               commissionRate: DEFAULT_COMMISSION_RATE,
               taxRate: DEFAULT_TAX_RATE,
               createdAt: now,
@@ -594,13 +730,18 @@ export const portfolioService = {
             accountData = accSnap.data() as MockAccount;
           }
 
-          const grossAmount = Math.round(price * quantity);
-          const fee = Math.round(grossAmount * accountData.commissionRate);
-          const requiredCash = grossAmount + fee;
+          // 통화 분리 검증 (KRW vs USD)
+          const availableCash = isUSD 
+            ? (accountData.currentCashUsd ?? DEFAULT_INITIAL_CASH_USD) 
+            : accountData.currentCash;
+          const fee = isUSD 
+            ? Number((executedGross * accountData.commissionRate).toFixed(2)) 
+            : Math.round(executedGross * accountData.commissionRate);
+          const requiredCash = isUSD ? Number((executedGross + fee).toFixed(2)) : (executedGross + fee);
 
-          if (requiredCash > accountData.currentCash) {
+          if (filledQty > 0 && requiredCash > availableCash) {
             throw new Error(
-              `가상 현금이 부족합니다. (필요 금액: ${requiredCash.toLocaleString()}원, 보유 현금: ${accountData.currentCash.toLocaleString()}원)`
+              `가상 현금이 부족합니다. (필요: ${isUSD ? '$' + requiredCash.toLocaleString() : requiredCash.toLocaleString() + '원'}, 보유: ${isUSD ? '$' + availableCash.toLocaleString() : availableCash.toLocaleString() + '원'})`
             );
           }
 
@@ -608,47 +749,46 @@ export const portfolioService = {
           const posRef = doc(db, 'mockHoldings', positionDocId);
           const posSnap = await tx.get(posRef);
 
-          let updatedPos: MockPosition;
-          if (posSnap.exists()) {
-            const currentPos = posSnap.data() as MockPosition;
-            const newQty = currentPos.quantity + quantity;
-            const newAvgPrice = Math.round(((currentPos.quantity * currentPos.avgBuyPrice) + grossAmount) / newQty);
-            updatedPos = {
-              ...currentPos,
-              quantity: newQty,
-              avgBuyPrice: newAvgPrice,
-              totalInvested: Math.round(newQty * newAvgPrice),
-              updatedAt: now,
-            };
-            tx.update(posRef, {
-              quantity: updatedPos.quantity,
-              avgBuyPrice: updatedPos.avgBuyPrice,
-              totalInvested: updatedPos.totalInvested,
-              updatedAt: now,
-            });
-          } else {
-            updatedPos = {
-              id: positionDocId,
-              uid,
-              symbol,
-              name,
-              market,
-              currency,
-              quantity,
-              avgBuyPrice: price,
-              totalInvested: grossAmount,
-              updatedAt: now,
-            };
-            tx.set(posRef, updatedPos);
+          if (filledQty > 0) {
+            if (posSnap.exists()) {
+              const currentPos = posSnap.data() as MockPosition;
+              const newQty = currentPos.quantity + filledQty;
+              const newAvgPrice = isUSD
+                ? Number((((currentPos.quantity * currentPos.avgBuyPrice) + executedGross) / newQty).toFixed(2))
+                : Math.round(((currentPos.quantity * currentPos.avgBuyPrice) + executedGross) / newQty);
+              tx.update(posRef, {
+                quantity: newQty,
+                avgBuyPrice: newAvgPrice,
+                totalInvested: isUSD ? Number((newQty * newAvgPrice).toFixed(2)) : Math.round(newQty * newAvgPrice),
+                updatedAt: now,
+              });
+            } else {
+              const newPos: MockPosition = {
+                id: positionDocId,
+                uid,
+                symbol,
+                name,
+                market,
+                currency,
+                quantity: filledQty,
+                avgBuyPrice: avgFilledPrice,
+                totalInvested: executedGross,
+                updatedAt: now,
+              };
+              tx.set(posRef, newPos);
+            }
           }
 
-          // Update Account Cash
-          const newCash = accountData.currentCash - requiredCash;
-          tx.set(accRef, {
-            ...accountData,
-            currentCash: newCash,
-            updatedAt: now,
-          }, { merge: true });
+          // Update Account Cash (통화 분리 반영)
+          if (filledQty > 0) {
+            const updatedAccount: MockAccount = {
+              ...accountData,
+              currentCash: isUSD ? accountData.currentCash : accountData.currentCash - requiredCash,
+              currentCashUsd: isUSD ? Number(((accountData.currentCashUsd ?? DEFAULT_INITIAL_CASH_USD) - requiredCash).toFixed(2)) : (accountData.currentCashUsd ?? DEFAULT_INITIAL_CASH_USD),
+              updatedAt: now,
+            };
+            tx.set(accRef, updatedAccount, { merge: true });
+          }
 
           // Create Mock Order
           executedOrder = {
@@ -657,23 +797,38 @@ export const portfolioService = {
             symbol,
             name,
             orderType: 'BUY',
-            price,
-            quantity,
-            totalAmount: grossAmount,
-            fee,
+            orderKind,
+            status: executionStatus,
+            price: avgFilledPrice,
+            quantity: filledQty > 0 ? filledQty : quantity,
+            requestedQuantity: quantity,
+            filledQuantity: filledQty,
+            unfilledQuantity: unfilledQty,
+            totalAmount: executedGross,
+            fee: filledQty > 0 ? fee : 0,
             tax: 0,
-            settledAmount: requiredCash,
-            reason: reason || '전략 매수 체결',
+            settledAmount: filledQty > 0 ? requiredCash : 0,
+            reason: reason || (executionStatus === 'FILLED' ? '전략 매수 체결' : executionStatus === 'PARTIALLY_FILLED' ? `호가 잔량 순차 체결 (${filledQty}/${quantity}주)` : '정규장 대기 접수'),
             executedAt: now,
             currency,
             exchangeRate: params.exchangeRate,
+            idempotencyKey,
+            quoteSource: isUSD ? 'Yahoo Finance API' : '키움증권 실전 API',
+            quoteTimestamp: new Date().toISOString(),
+            isDelayedQuote: false,
+            fills,
           };
 
           const orderRef = doc(db, 'mockOrders', orderId);
           tx.set(orderRef, executedOrder);
         });
 
-        if (executedOrder) return executedOrder;
+        if (executedOrder) {
+          if (idempotencyKey) {
+            idempotencyCache.set(idempotencyKey, { order: executedOrder, timestamp: Date.now() });
+          }
+          return executedOrder;
+        }
       } catch (err: any) {
         console.warn('[portfolioService] executeMockBuyOrder Firestore transaction failed:', err);
         throw new Error(err.message || '매수 주문 처리 중 오류가 발생했습니다.');
@@ -682,13 +837,13 @@ export const portfolioService = {
 
     // Guest fallback (Local storage transactional simulation)
     const acc = await this.getMockAccount(uid);
-    const grossAmount = Math.round(price * quantity);
-    const fee = Math.round(grossAmount * acc.commissionRate);
-    const requiredCash = grossAmount + fee;
+    const availableCash = isUSD ? (acc.currentCashUsd ?? DEFAULT_INITIAL_CASH_USD) : acc.currentCash;
+    const fee = isUSD ? Number((executedGross * acc.commissionRate).toFixed(2)) : Math.round(executedGross * acc.commissionRate);
+    const requiredCash = isUSD ? Number((executedGross + fee).toFixed(2)) : (executedGross + fee);
 
-    if (requiredCash > acc.currentCash) {
+    if (filledQty > 0 && requiredCash > availableCash) {
       throw new Error(
-        `가상 현금이 부족합니다. (필요 금액: ${requiredCash.toLocaleString()}원, 보유 현금: ${acc.currentCash.toLocaleString()}원)`
+        `가상 현금이 부족합니다. (필요: ${isUSD ? '$' + requiredCash.toLocaleString() : requiredCash.toLocaleString() + '원'}, 보유: ${isUSD ? '$' + availableCash.toLocaleString() : availableCash.toLocaleString() + '원'})`
       );
     }
 
@@ -696,36 +851,43 @@ export const portfolioService = {
     const existing = positions.find(p => p.symbol === symbol);
 
     let updatedPositions: MockPosition[];
-    if (existing) {
-      const newQty = existing.quantity + quantity;
-      const newAvgPrice = Math.round(((existing.quantity * existing.avgBuyPrice) + grossAmount) / newQty);
-      const updatedItem: MockPosition = {
-        ...existing,
-        quantity: newQty,
-        avgBuyPrice: newAvgPrice,
-        totalInvested: Math.round(newQty * newAvgPrice),
-        updatedAt: now,
-      };
-      updatedPositions = positions.map(p => p.symbol === symbol ? updatedItem : p);
+    if (filledQty > 0) {
+      if (existing) {
+        const newQty = existing.quantity + filledQty;
+        const newAvgPrice = isUSD
+          ? Number((((existing.quantity * existing.avgBuyPrice) + executedGross) / newQty).toFixed(2))
+          : Math.round(((existing.quantity * existing.avgBuyPrice) + executedGross) / newQty);
+        const updatedItem: MockPosition = {
+          ...existing,
+          quantity: newQty,
+          avgBuyPrice: newAvgPrice,
+          totalInvested: isUSD ? Number((newQty * newAvgPrice).toFixed(2)) : Math.round(newQty * newAvgPrice),
+          updatedAt: now,
+        };
+        updatedPositions = positions.map(p => p.symbol === symbol ? updatedItem : p);
+      } else {
+        const newPos: MockPosition = {
+          id: positionDocId,
+          uid: 'guest',
+          symbol,
+          name,
+          market,
+          currency,
+          quantity: filledQty,
+          avgBuyPrice: avgFilledPrice,
+          totalInvested: executedGross,
+          updatedAt: now,
+        };
+        updatedPositions = [newPos, ...positions];
+      }
     } else {
-      const newPos: MockPosition = {
-        id: positionDocId,
-        uid: 'guest',
-        symbol,
-        name,
-        market,
-        currency,
-        quantity,
-        avgBuyPrice: price,
-        totalInvested: grossAmount,
-        updatedAt: now,
-      };
-      updatedPositions = [newPos, ...positions];
+      updatedPositions = positions;
     }
 
     const updatedAccount: MockAccount = {
       ...acc,
-      currentCash: acc.currentCash - requiredCash,
+      currentCash: isUSD ? acc.currentCash : acc.currentCash - (filledQty > 0 ? requiredCash : 0),
+      currentCashUsd: isUSD ? Number(((acc.currentCashUsd ?? DEFAULT_INITIAL_CASH_USD) - (filledQty > 0 ? requiredCash : 0)).toFixed(2)) : acc.currentCashUsd,
       updatedAt: now,
     };
 
@@ -735,16 +897,26 @@ export const portfolioService = {
       symbol,
       name,
       orderType: 'BUY',
-      price,
-      quantity,
-      totalAmount: grossAmount,
-      fee,
+      orderKind,
+      status: executionStatus,
+      price: avgFilledPrice,
+      quantity: filledQty > 0 ? filledQty : quantity,
+      requestedQuantity: quantity,
+      filledQuantity: filledQty,
+      unfilledQuantity: unfilledQty,
+      totalAmount: executedGross,
+      fee: filledQty > 0 ? fee : 0,
       tax: 0,
-      settledAmount: requiredCash,
-      reason: reason || '전략 매수 체결',
+      settledAmount: filledQty > 0 ? requiredCash : 0,
+      reason: reason || (executionStatus === 'FILLED' ? '전략 매수 체결' : executionStatus === 'PARTIALLY_FILLED' ? `호가 잔량 순차 체결 (${filledQty}/${quantity}주)` : '정규장 대기 접수'),
       executedAt: now,
       currency,
       exchangeRate: params.exchangeRate,
+      idempotencyKey,
+      quoteSource: isUSD ? 'Yahoo Finance API' : '키움증권 실전 API',
+      quoteTimestamp: new Date().toISOString(),
+      isDelayedQuote: false,
+      fills,
     };
 
     saveLocal(STORAGE_KEYS.MOCK_ACCOUNT, updatedAccount);
@@ -752,27 +924,54 @@ export const portfolioService = {
     const prevOrders = loadLocal<MockOrder[]>(STORAGE_KEYS.MOCK_ORDERS, []);
     saveLocal(STORAGE_KEYS.MOCK_ORDERS, [order, ...prevOrders]);
 
+    if (idempotencyKey) {
+      idempotencyCache.set(idempotencyKey, { order, timestamp: Date.now() });
+    }
+
     return order;
   },
 
-  // 모의 매도 주문 실행 (원자적 수량 검증, 실현손익 계산 및 현금 정산)
+  // 모의 매도 주문 실행 (실제 호가 10단계 매수 잔량 순차 소진 Walking the book, 통화 분리, 실현손익 및 정산)
   async executeMockSellOrder(
     uid: string | undefined,
     params: {
       symbol: string;
       price: number;
       quantity: number;
+      market?: string;
+      orderKind?: 'MARKET' | 'LIMIT';
       reason?: string;
       exchangeRate?: number;
+      idempotencyKey?: string;
+      quoteTimestamp?: number | string;
     }
   ): Promise<MockOrder> {
-    const { symbol, price, quantity, reason } = params;
+    const { symbol, price, quantity, reason, orderKind = 'LIMIT', idempotencyKey, quoteTimestamp } = params;
+
+    // 0. Idempotency Check (중복 주문 방지)
+    if (idempotencyKey && idempotencyCache.has(idempotencyKey)) {
+      const cached = idempotencyCache.get(idempotencyKey)!;
+      if (Date.now() - cached.timestamp < 10000) {
+        return cached.order;
+      }
+    }
 
     if (price <= 0 || !Number.isFinite(price)) {
       throw new Error('유효한 매도 가격을 입력해주세요.');
     }
     if (quantity <= 0 || !Number.isInteger(quantity)) {
       throw new Error('매도 수량은 1주 이상의 정수여야 합니다.');
+    }
+
+    // 1. 시세 신선도 검증
+    if (quoteTimestamp) {
+      const quoteTime = typeof quoteTimestamp === 'number' ? quoteTimestamp : new Date(quoteTimestamp).getTime();
+      if (!isNaN(quoteTime)) {
+        const ageMs = Date.now() - quoteTime;
+        if (ageMs > 60000) {
+          throw new Error(`시세 데이터가 1분 이상 지연되어 체결할 수 없습니다. (${Math.round(ageMs / 1000)}초 전 시세). 실시간 시세를 새로고침해주세요.`);
+        }
+      }
     }
 
     const now = new Date().toISOString();
@@ -803,34 +1002,119 @@ export const portfolioService = {
             );
           }
 
-          const grossAmount = Math.round(price * quantity);
-          const fee = Math.round(grossAmount * accountData.commissionRate);
-          const tax = Math.round(grossAmount * accountData.taxRate);
-          const netProceeds = grossAmount - fee - tax;
+          const currency = currentPos.currency || 'KRW';
+          const isUSD = currency === 'USD';
+          const market = params.market || currentPos.market || (isUSD ? 'US' : 'KRX');
 
-          const costBasis = Math.round(quantity * currentPos.avgBuyPrice);
-          const realizedProfit = (grossAmount - costBasis) - fee - tax;
-          const realizedProfitRate = currentPos.avgBuyPrice > 0
-            ? Number((((price - currentPos.avgBuyPrice) / currentPos.avgBuyPrice) * 100).toFixed(2))
+          // 거래시간 검증
+          const tradingHours = validateMarketTradingHours(market, orderKind);
+          if (!tradingHours.canExecuteNow && !tradingHours.canQueuePending) {
+            throw new Error(tradingHours.message);
+          }
+          const isPendingOrder = !tradingHours.canExecuteNow;
+
+          // 호가창 10단계 매수 잔량 순차 소진 (Walking the book)
+          let orderBook: OrderBook | null = null;
+          try {
+            orderBook = await stockRepository.getOrderBook(symbol);
+          } catch {
+            orderBook = null;
+          }
+
+          const rawBids = (orderBook?.bids || []).filter(b => b.price > 0);
+          const sortedBids = [...rawBids].sort((a, b) => b.price - a.price);
+          const bestBidPrice = sortedBids[0]?.price || orderBook?.bestBidPrice || price;
+
+          let fills: MockOrderFill[] = [];
+          let filledQty = 0;
+          let unfilledQty = quantity;
+          let totalExecutedAmount = 0;
+          let executionStatus: 'FILLED' | 'PARTIALLY_FILLED' | 'PENDING' = 'PENDING';
+
+          if (isPendingOrder) {
+            executionStatus = 'PENDING';
+            filledQty = 0;
+            unfilledQty = quantity;
+          } else if (orderKind === 'LIMIT' && price > bestBidPrice) {
+            // 지정가 매도 희망가가 최우선 매수호가(Bid 1)보다 높아 체결 불가 -> 대기 등록
+            executionStatus = 'PENDING';
+            filledQty = 0;
+            unfilledQty = quantity;
+          } else {
+            if (sortedBids.length > 0) {
+              for (let i = 0; i < sortedBids.length; i++) {
+                const bid = sortedBids[i];
+                // 지정가 매도는 매수호가가 지정가 이상일 때만 체결
+                if (orderKind === 'LIMIT' && bid.price < price) break;
+                // 호가 잔량이 0 이하이면 체결하지 않음
+                if (bid.volume <= 0) continue;
+
+                const availableVol = bid.volume;
+                const takeQty = Math.min(unfilledQty, availableVol);
+                if (takeQty > 0) {
+                  fills.push({
+                    price: bid.price,
+                    quantity: takeQty,
+                    amount: takeQty * bid.price,
+                    level: i + 1,
+                    executedAt: now,
+                  });
+                  totalExecutedAmount += takeQty * bid.price;
+                  filledQty += takeQty;
+                  unfilledQty -= takeQty;
+                }
+                if (unfilledQty === 0) break;
+              }
+            } else {
+              // 호가 데이터 미수신 또는 잔량 부재 시 임의 가격 체결 금지
+              if (orderKind === 'MARKET') {
+                throw new Error('실시간 매수 호가 잔량을 확인할 수 없어 시장가 매도 주문이 거절되었습니다. 호가창을 새로고침해주세요.');
+              }
+              executionStatus = 'PENDING';
+              filledQty = 0;
+              unfilledQty = quantity;
+            }
+
+            if (sortedBids.length > 0) {
+              executionStatus = unfilledQty === 0 ? 'FILLED' : filledQty > 0 ? 'PARTIALLY_FILLED' : 'PENDING';
+            }
+          }
+
+          const avgFilledPrice = filledQty > 0
+            ? (isUSD ? Number((totalExecutedAmount / filledQty).toFixed(2)) : Math.round(totalExecutedAmount / filledQty))
+            : price;
+          const grossAmount = totalExecutedAmount;
+
+          const fee = isUSD ? Number((grossAmount * accountData.commissionRate).toFixed(2)) : Math.round(grossAmount * accountData.commissionRate);
+          const tax = isUSD ? 0 : Math.round(grossAmount * accountData.taxRate);
+          const netProceeds = isUSD ? Number((grossAmount - fee - tax).toFixed(2)) : (grossAmount - fee - tax);
+
+          const costBasis = isUSD ? Number((filledQty * currentPos.avgBuyPrice).toFixed(2)) : Math.round(filledQty * currentPos.avgBuyPrice);
+          const realizedProfit = filledQty > 0 ? (isUSD ? Number(((grossAmount - costBasis) - fee - tax).toFixed(2)) : ((grossAmount - costBasis) - fee - tax)) : 0;
+          const realizedProfitRate = currentPos.avgBuyPrice > 0 && filledQty > 0
+            ? Number((((avgFilledPrice - currentPos.avgBuyPrice) / currentPos.avgBuyPrice) * 100).toFixed(2))
             : 0;
 
           // Update or delete position
-          const remainingQty = currentPos.quantity - quantity;
-          if (remainingQty === 0) {
-            tx.delete(posRef);
-          } else {
-            tx.update(posRef, {
-              quantity: remainingQty,
-              totalInvested: Math.round(remainingQty * currentPos.avgBuyPrice),
+          if (filledQty > 0) {
+            const remainingQty = currentPos.quantity - filledQty;
+            if (remainingQty === 0) {
+              tx.delete(posRef);
+            } else {
+              tx.update(posRef, {
+                quantity: remainingQty,
+                totalInvested: isUSD ? Number((remainingQty * currentPos.avgBuyPrice).toFixed(2)) : Math.round(remainingQty * currentPos.avgBuyPrice),
+                updatedAt: now,
+              });
+            }
+
+            // Update Account Cash (통화 분리 반영)
+            tx.update(accRef, {
+              currentCash: isUSD ? accountData.currentCash : accountData.currentCash + netProceeds,
+              currentCashUsd: isUSD ? Number(((accountData.currentCashUsd ?? DEFAULT_INITIAL_CASH_USD) + netProceeds).toFixed(2)) : accountData.currentCashUsd,
               updatedAt: now,
             });
           }
-
-          // Update Account Cash
-          tx.update(accRef, {
-            currentCash: accountData.currentCash + netProceeds,
-            updatedAt: now,
-          });
 
           // Create Mock Order
           executedOrder = {
@@ -839,25 +1123,40 @@ export const portfolioService = {
             symbol,
             name: currentPos.name,
             orderType: 'SELL',
-            price,
-            quantity,
+            orderKind,
+            status: executionStatus,
+            price: avgFilledPrice,
+            quantity: filledQty > 0 ? filledQty : quantity,
+            requestedQuantity: quantity,
+            filledQuantity: filledQty,
+            unfilledQuantity: unfilledQty,
             totalAmount: grossAmount,
-            fee,
-            tax,
-            settledAmount: netProceeds,
-            realizedProfit,
-            realizedProfitRate,
-            reason: reason || '목표 달성 및 차익 실현 매도',
+            fee: filledQty > 0 ? fee : 0,
+            tax: filledQty > 0 ? tax : 0,
+            settledAmount: filledQty > 0 ? netProceeds : 0,
+            realizedProfit: filledQty > 0 ? realizedProfit : undefined,
+            realizedProfitRate: filledQty > 0 ? realizedProfitRate : undefined,
+            reason: reason || (executionStatus === 'FILLED' ? '목표 달성 및 차익 실현 매도' : executionStatus === 'PARTIALLY_FILLED' ? `호가 잔량 순차 체결 (${filledQty}/${quantity}주)` : '정규장 대기 접수'),
             executedAt: now,
-            currency: currentPos.currency || 'KRW',
+            currency,
             exchangeRate: params.exchangeRate,
+            idempotencyKey,
+            quoteSource: isUSD ? 'Yahoo Finance API' : '키움증권 실전 API',
+            quoteTimestamp: new Date().toISOString(),
+            isDelayedQuote: false,
+            fills,
           };
 
           const orderRef = doc(db, 'mockOrders', orderId);
           tx.set(orderRef, executedOrder);
         });
 
-        if (executedOrder) return executedOrder;
+        if (executedOrder) {
+          if (idempotencyKey) {
+            idempotencyCache.set(idempotencyKey, { order: executedOrder, timestamp: Date.now() });
+          }
+          return executedOrder;
+        }
       } catch (err: any) {
         console.warn('[portfolioService] executeMockSellOrder Firestore transaction failed:', err);
         throw new Error(err.message || '매도 주문 처리 중 오류가 발생했습니다.');
@@ -878,12 +1177,14 @@ export const portfolioService = {
       );
     }
 
-    const grossAmount = Math.round(price * quantity);
-    const fee = Math.round(grossAmount * acc.commissionRate);
-    const tax = Math.round(grossAmount * acc.taxRate);
-    const netProceeds = grossAmount - fee - tax;
-    const costBasis = Math.round(quantity * currentPos.avgBuyPrice);
-    const realizedProfit = (grossAmount - costBasis) - fee - tax;
+    const currency = currentPos.currency || 'KRW';
+    const isUSD = currency === 'USD';
+    const grossAmount = isUSD ? Number((price * quantity).toFixed(2)) : Math.round(price * quantity);
+    const fee = isUSD ? Number((grossAmount * acc.commissionRate).toFixed(2)) : Math.round(grossAmount * acc.commissionRate);
+    const tax = isUSD ? 0 : Math.round(grossAmount * acc.taxRate);
+    const netProceeds = isUSD ? Number((grossAmount - fee - tax).toFixed(2)) : (grossAmount - fee - tax);
+    const costBasis = isUSD ? Number((quantity * currentPos.avgBuyPrice).toFixed(2)) : Math.round(quantity * currentPos.avgBuyPrice);
+    const realizedProfit = isUSD ? Number(((grossAmount - costBasis) - fee - tax).toFixed(2)) : ((grossAmount - costBasis) - fee - tax);
     const realizedProfitRate = currentPos.avgBuyPrice > 0
       ? Number((((price - currentPos.avgBuyPrice) / currentPos.avgBuyPrice) * 100).toFixed(2))
       : 0;
@@ -895,14 +1196,20 @@ export const portfolioService = {
     } else {
       updatedPositions = positions.map(p =>
         p.symbol === symbol
-          ? { ...p, quantity: remainingQty, totalInvested: Math.round(remainingQty * p.avgBuyPrice), updatedAt: now }
+          ? {
+              ...p,
+              quantity: remainingQty,
+              totalInvested: isUSD ? Number((remainingQty * p.avgBuyPrice).toFixed(2)) : Math.round(remainingQty * p.avgBuyPrice),
+              updatedAt: now,
+            }
           : p
       );
     }
 
     const updatedAccount: MockAccount = {
       ...acc,
-      currentCash: acc.currentCash + netProceeds,
+      currentCash: isUSD ? acc.currentCash : acc.currentCash + netProceeds,
+      currentCashUsd: isUSD ? Number(((acc.currentCashUsd ?? DEFAULT_INITIAL_CASH_USD) + netProceeds).toFixed(2)) : acc.currentCashUsd,
       updatedAt: now,
     };
 
@@ -912,8 +1219,13 @@ export const portfolioService = {
       symbol,
       name: currentPos.name,
       orderType: 'SELL',
+      orderKind,
+      status: 'FILLED',
       price,
       quantity,
+      requestedQuantity: quantity,
+      filledQuantity: quantity,
+      unfilledQuantity: 0,
       totalAmount: grossAmount,
       fee,
       tax,
@@ -922,14 +1234,22 @@ export const portfolioService = {
       realizedProfitRate,
       reason: reason || '목표 달성 및 차익 실현 매도',
       executedAt: now,
-      currency: currentPos.currency || 'KRW',
+      currency,
       exchangeRate: params.exchangeRate,
+      idempotencyKey,
+      quoteSource: isUSD ? 'Yahoo Finance API' : '키움증권 실전 API',
+      quoteTimestamp: new Date().toISOString(),
+      isDelayedQuote: false,
     };
 
     saveLocal(STORAGE_KEYS.MOCK_ACCOUNT, updatedAccount);
     saveLocal(STORAGE_KEYS.MOCK_POSITIONS, updatedPositions);
     const prevOrders = loadLocal<MockOrder[]>(STORAGE_KEYS.MOCK_ORDERS, []);
     saveLocal(STORAGE_KEYS.MOCK_ORDERS, [order, ...prevOrders]);
+
+    if (idempotencyKey) {
+      idempotencyCache.set(idempotencyKey, { order, timestamp: Date.now() });
+    }
 
     return order;
   },
@@ -938,7 +1258,7 @@ export const portfolioService = {
   // 3. Live Quote & Currency Helpers
   // ==========================================
 
-  // 국내/해외 시세 일괄 조회 및 검증
+  // 국내/해외 시세 일괄 조회 및 검증 (호가 기준가 및 신선도 타임스탬프 포함)
   async resolveQuote(symbol: string): Promise<{
     symbol: string;
     name: string;
@@ -952,11 +1272,26 @@ export const portfolioService = {
     provider: string;
     status: 'ok' | 'delayed' | 'error';
     asOf: string;
+    quoteTimestamp: number;
+    bestAskPrice?: number;
+    bestBidPrice?: number;
   } | null> {
     try {
       // 1. Try domestic stock first
       const stock = await stockRepository.getStock(symbol);
       if (stock && stock.price > 0) {
+        let bestAskPrice = stock.price;
+        let bestBidPrice = stock.price;
+        try {
+          const ob = await stockRepository.getOrderBook(symbol);
+          if (ob) {
+            bestAskPrice = ob.bestAskPrice || (ob.asks?.length ? ob.asks[ob.asks.length - 1].price : stock.price);
+            bestBidPrice = ob.bestBidPrice || (ob.bids?.length ? ob.bids[0].price : stock.price);
+          }
+        } catch {
+          // fallback to stock.price
+        }
+
         return {
           symbol: stock.symbol,
           name: stock.name,
@@ -970,6 +1305,9 @@ export const portfolioService = {
           provider: '키움증권 실전 API',
           status: 'ok',
           asOf: new Date().toLocaleTimeString('ko-KR'),
+          quoteTimestamp: Date.now(),
+          bestAskPrice,
+          bestBidPrice,
         };
       }
 
@@ -998,6 +1336,9 @@ export const portfolioService = {
           provider: foundGlobal.provider || 'Yahoo Finance Public API',
           status: foundGlobal.status || 'ok',
           asOf: foundGlobal.lastUpdated || new Date().toLocaleTimeString('ko-KR'),
+          quoteTimestamp: Date.now(),
+          bestAskPrice: foundGlobal.value,
+          bestBidPrice: foundGlobal.value,
         };
       }
 

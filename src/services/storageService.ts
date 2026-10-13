@@ -64,7 +64,7 @@ export const storageService = {
 
   // Community Posts
   getPosts(): CommunityPost[] {
-    return loadFromStorage<CommunityPost[]>(STORAGE_KEYS.POSTS, INITIAL_POSTS);
+    return loadFromStorage<CommunityPost[]>(STORAGE_KEYS.POSTS, []);
   },
 
   getPostById(id: string): CommunityPost | undefined {
@@ -210,12 +210,12 @@ export const storageService = {
   },
 
   getChatMessages(roomId: string = 'all'): ChatMessage[] {
-    const allMessages = loadFromStorage<ChatMessage[]>(STORAGE_KEYS.CHAT, INITIAL_CHAT_MESSAGES);
+    const allMessages = loadFromStorage<ChatMessage[]>(STORAGE_KEYS.CHAT, []);
     return allMessages.filter(m => m.roomId === roomId);
   },
 
   sendChatMessage(message: Omit<ChatMessage, 'id' | 'timestamp' | 'likes'>): ChatMessage {
-    const allMessages = loadFromStorage<ChatMessage[]>(STORAGE_KEYS.CHAT, INITIAL_CHAT_MESSAGES);
+    const allMessages = loadFromStorage<ChatMessage[]>(STORAGE_KEYS.CHAT, []);
     const now = new Date();
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
     
@@ -368,7 +368,12 @@ export const storageService = {
 
   // Market Events
   getMarketEvents(): MarketEvent[] {
-    return loadFromStorage<MarketEvent[]>(STORAGE_KEYS.EVENTS, INITIAL_MARKET_EVENTS);
+    const events = loadFromStorage<MarketEvent[]>(STORAGE_KEYS.EVENTS, INITIAL_MARKET_EVENTS);
+    if (!events || events.length === 0 || !events.some(e => e.sourceUrl?.includes('data.krx.co.kr'))) {
+      saveToStorage(STORAGE_KEYS.EVENTS, INITIAL_MARKET_EVENTS);
+      return INITIAL_MARKET_EVENTS;
+    }
+    return events;
   },
 
   broadcastMarketEvent(event: Omit<MarketEvent, 'id' | 'timestamp' | 'active'>): MarketEvent {
@@ -387,7 +392,7 @@ export const storageService = {
 
   // Admin Reports
   getReports(): AdminReport[] {
-    return loadFromStorage<AdminReport[]>(STORAGE_KEYS.REPORTS, INITIAL_ADMIN_REPORTS);
+    return loadFromStorage<AdminReport[]>(STORAGE_KEYS.REPORTS, []);
   },
 
   updateReportStatus(id: string, status: 'resolved' | 'dismissed'): void {

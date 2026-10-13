@@ -31,6 +31,8 @@ export interface Stock {
   marketSession?: 'REGULAR' | 'PRE' | 'POST' | 'CLOSED';
   lastUpdated?: string;
   dataSource?: 'kiwoom' | 'yahoo' | 'mock';
+  nameEn?: string;
+  productType?: 'EQUITY' | 'ETF' | 'INDEX';
 }
 
 export interface CandleData {
@@ -125,9 +127,15 @@ export interface MarketEvent {
   market?: 'KOSPI' | 'KOSDAQ' | 'US' | 'ALL';
   symbol?: string;
   symbolName?: string;
-  timestamp: string;
+  timestamp: string; // 표기 시간 (e.g., 2024.08.05 11:00 KST)
   severity: 'urgent' | 'warning' | 'info';
-  active: boolean;
+  active: boolean; // 현재 장중 발동 상태 여부 (실제 실시간 확인 데이터가 있을 때만 true)
+  sidecarType?: 'BUY' | 'SELL'; // 매수 사이드카 / 매도 사이드카
+  triggerDateTime?: string; // 발동 기준 일시 (YYYY-MM-DD HH:mm:ss KST)
+  sourceUrl?: string; // 신뢰할 수 있는 공식 거래소/보도 출처 URL
+  lastVerifiedAt?: string; // 데이터 마지막 확인 시각
+  isHistorical?: boolean; // 과거 실제 발동 기록 여부
+  verifiedStatus?: 'VERIFIED_OFFICIAL' | 'INACTIVE' | 'UNVERIFIABLE'; // 데이터 검증 상태
 }
 
 export interface OrderBookLevel {
@@ -145,6 +153,8 @@ export interface OrderBook {
   bids: OrderBookLevel[]; // 매수 호가 (10 levels, sorted descending)
   totalAskVolume: number;
   totalBidVolume: number;
+  bestAskPrice?: number; // 최우선 매도호가 (Ask 1: 매수 체결 기준가)
+  bestBidPrice?: number; // 최우선 매수호가 (Bid 1: 매도 체결 기준가)
 }
 
 export interface StockNews {
@@ -556,8 +566,10 @@ export interface VirtualHoldingTrade {
 // ==========================================
 export interface MockAccount {
   uid: string;
-  initialBalance: number; // 초기 가상 자금 (기본 100,000,000원)
-  currentCash: number; // 보유 현금 / 예수금
+  initialBalance: number; // 초기 가상 자금 (기본 100,000,000 KRW)
+  currentCash: number; // 보유 원화 현금 / 예수금 (KRW)
+  initialBalanceUsd?: number; // 초기 가상 외화 자금 (기본 100,000 USD)
+  currentCashUsd?: number; // 보유 외화 현금 / 예수금 (USD)
   commissionRate: number; // 매매 수수료율 (기본 0.015% = 0.00015, 설정 가능)
   taxRate: number; // 매도시 증권거래세율 (기본 0.18% = 0.0018, 설정 가능)
   createdAt: string;
@@ -577,14 +589,27 @@ export interface MockPosition {
   updatedAt: string;
 }
 
+export interface MockOrderFill {
+  price: number;
+  quantity: number;
+  amount: number;
+  level: number;
+  executedAt: string;
+}
+
 export interface MockOrder {
   id: string;
   uid: string;
   symbol: string;
   name: string;
   orderType: 'BUY' | 'SELL';
+  orderKind?: 'MARKET' | 'LIMIT';
+  status?: 'FILLED' | 'PARTIALLY_FILLED' | 'PENDING' | 'CANCELLED' | 'REJECTED';
   price: number;
   quantity: number;
+  requestedQuantity?: number;
+  filledQuantity?: number;
+  unfilledQuantity?: number;
   totalAmount: number;
   fee: number;
   tax: number;
@@ -595,6 +620,12 @@ export interface MockOrder {
   executedAt: string;
   currency: 'KRW' | 'USD';
   exchangeRate?: number;
+  idempotencyKey?: string;
+  quoteSource?: string;
+  quoteTimestamp?: string;
+  isDelayedQuote?: boolean;
+  rejectReason?: string;
+  fills?: MockOrderFill[];
 }
 
 export interface TradingFeeSettings {
@@ -714,6 +745,10 @@ export interface UserAiConnectionUpdateRequest {
   apiKey: string;
   model?: string;
 }
+
+// Root Superadmin identification constants (Client-safe)
+export const ROOT_SUPERADMIN_UID = 'lr018vf8CcW5fAv707vsl77qJy53';
+export const ROOT_SUPERADMIN_EMAIL = 'byunghyunlim92@gmail.com';
 
 
 

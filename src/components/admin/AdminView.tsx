@@ -155,8 +155,8 @@ export const AdminView: React.FC = () => {
               setLogs(adminService.getAdminLogs());
               showToast('경고 알림이 전송되었습니다.', 'info');
             }}
-            onChangeRole={(uid, newRole) => {
-              const res = adminService.changeUserRole(uid, newRole, user.role, callerProfile);
+            onChangeRole={async (uid, newRole) => {
+              const res = await adminService.changeUserRole(uid, newRole, user.role, callerProfile);
               if (res.success) {
                 setUsers(adminService.getUsers());
                 setLogs(adminService.getAdminLogs());

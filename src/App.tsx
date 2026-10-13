@@ -6,6 +6,7 @@ import { SearchModal } from './components/layout/SearchModal';
 import { AuthModal } from './components/layout/AuthModal';
 import { ToastContainer } from './components/common/ToastContainer';
 import { Footer } from './components/layout/Footer';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 
 // Views
 import { HomeView } from './components/home/HomeView';
@@ -22,6 +23,7 @@ import { NewsView } from './components/news/NewsView';
 import { StockRankingView } from './components/stocks/StockRankingView';
 import { IndexDetailView } from './components/indices/IndexDetailView';
 import { PortfolioView } from './components/portfolio/PortfolioView';
+import { SideChatPanel } from './components/chat/SideChatPanel';
 
 const MainLayout: React.FC = () => {
   const { 
@@ -31,7 +33,8 @@ const MainLayout: React.FC = () => {
     setActiveTab, 
     user, 
     isAuthenticated, 
-    showToast 
+    showToast,
+    isSideChatOpen
   } = useApp();
 
   const isAuthorizedAdmin = Boolean(
@@ -111,14 +114,26 @@ const MainLayout: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-[#0c0f17] text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-150">
+    <div className="min-h-screen bg-slate-50 dark:bg-[#0c0f17] text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-150 relative">
       <Navbar />
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-24 md:pb-8">
-        {renderActiveView()}
-      </main>
+      {/* Main Container with responsive right padding when SideChatPanel is open on lg screens */}
+      <div className={`flex-1 flex flex-col transition-all duration-200 ${
+        activeTab !== 'chat' && isSideChatOpen ? 'lg:pr-[340px] xl:pr-[360px]' : activeTab !== 'chat' ? 'lg:pr-12' : ''
+      }`}>
+        <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-24 md:pb-8">
+          <ErrorBoundary fallbackTitle="화면을 불러오는 중 문제가 발생했습니다.">
+            {renderActiveView()}
+          </ErrorBoundary>
+        </main>
+        <Footer />
+      </div>
 
-      <Footer />
+      {/* Side Chat Panel (Only render when activeTab is not full chat) */}
+      {activeTab !== 'chat' && (
+        <SideChatPanel onOpenFullChat={() => setActiveTab('chat')} />
+      )}
+
       <MobileNav />
       <SearchModal />
       <AuthModal />

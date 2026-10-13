@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { MarketFilterType, RankingSortType, StockRankingItem, StockRankingResponse } from '../../types';
 import { useApp } from '../../context/AppContext';
+import { getKRXMarketStatus } from '../../utils/marketHours';
 
 export const StockRankingView: React.FC = () => {
   const { navigateToStock } = useApp();
@@ -155,6 +156,22 @@ export const StockRankingView: React.FC = () => {
         <div className="flex flex-wrap items-center gap-2.5 self-start md:self-auto">
           {rankingData && (
             <>
+              {/* Market Session Status Badge (정규장/장시작전/장마감/휴장일) */}
+              {(() => {
+                const krxStatus = getKRXMarketStatus(new Date());
+                return (
+                  <div className={`flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-xl border ${
+                    krxStatus.isOpen
+                      ? 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/30 text-rose-600 dark:text-rose-400'
+                      : 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
+                  }`}>
+                    <span className={`w-2 h-2 rounded-full ${krxStatus.isOpen ? 'bg-rose-500 animate-pulse' : 'bg-slate-400'}`} />
+                    <span>{krxStatus.statusLabel}</span>
+                    <span className="text-[11px] opacity-75 font-normal">({krxStatus.detailLabel})</span>
+                  </div>
+                );
+              })()}
+
               {/* Data Source Badge */}
               <div className={`flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-xl border ${
                 rankingData.dataSource === 'kiwoom'
@@ -171,7 +188,7 @@ export const StockRankingView: React.FC = () => {
               {/* Timestamp */}
               <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 font-mono bg-slate-50 dark:bg-slate-800/60 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700">
                 <Clock className="w-3.5 h-3.5 text-slate-400" />
-                <span>갱신: {rankingData.lastUpdated}</span>
+                <span>기준 시각: {rankingData.lastUpdated}</span>
               </div>
             </>
           )}

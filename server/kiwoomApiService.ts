@@ -103,6 +103,23 @@ export interface KiwoomDiagnosticResult {
   };
   sampleStockTest?: KiwoomSampleQuoteTest;
   sampleUSTest?: KiwoomSampleQuoteTest;
+  parseValidationTest?: {
+    attempted: boolean;
+    success: boolean;
+    testCasesPassed: number;
+    totalTestCases: number;
+    results: Array<{
+      scenario: string;
+      expectedPrice: number;
+      parsedPrice: number;
+      expectedChange: number;
+      parsedChange: number;
+      expectedChangePercent: number;
+      parsedChangePercent: number;
+      isWeekendFallback: boolean;
+      success: boolean;
+    }>;
+  };
   connectionStatus: 'NOT_CONFIGURED' | 'TOKEN_FAILED' | 'TOKEN_OK_QUOTE_FAILED' | 'DOMESTIC_CONNECTED' | 'FULL_CONNECTED';
   connectionStatusMessage: string;
 }
@@ -115,6 +132,44 @@ export interface KiwoomMasterStock {
   lastPrice: number;
   listCount: number;
   marketCap: number; // in 억 원
+}
+
+/**
+ * Cleanly parse integer numbers from API response strings.
+ * Strips commas, percentage signs, and trims whitespace.
+ * Prevents standard JavaScript bug where parseInt("70,000", 10) returns 70!
+ */
+export function parseCleanInt(val: any, fallback: number = 0): number {
+  if (val === undefined || val === null || val === '') return fallback;
+  if (typeof val === 'number') return isNaN(val) ? fallback : Math.round(val);
+  const cleaned = String(val).replace(/,/g, '').replace(/%/g, '').trim();
+  const n = parseInt(cleaned, 10);
+  return isNaN(n) ? fallback : n;
+}
+
+/**
+ * Cleanly parse stock prices and order book quotes from API response strings.
+ * Strips +, -, commas, % symbols, and applies Math.abs() to guarantee positive integers.
+ */
+export function parseCleanPrice(val: any, fallback: number = 0): number {
+  if (val === undefined || val === null || val === '') return fallback;
+  if (typeof val === 'number') return isNaN(val) ? fallback : Math.abs(Math.round(val));
+  const cleaned = String(val).replace(/[+,]/g, '').replace(/^-/, '').replace(/%/g, '').trim();
+  const n = parseInt(cleaned, 10);
+  return isNaN(n) ? fallback : Math.abs(n);
+}
+
+/**
+ * Cleanly parse floating point numbers from API response strings.
+ * Strips commas, percentage signs, and trims whitespace.
+ * Prevents standard JavaScript bug where parseFloat("2,710.50") returns 2!
+ */
+export function parseCleanFloat(val: any, fallback: number = 0): number {
+  if (val === undefined || val === null || val === '') return fallback;
+  if (typeof val === 'number') return isNaN(val) ? fallback : val;
+  const cleaned = String(val).replace(/,/g, '').replace(/%/g, '').trim();
+  const n = parseFloat(cleaned);
+  return isNaN(n) ? fallback : n;
 }
 
 class KiwoomApiService {
@@ -136,7 +191,16 @@ class KiwoomApiService {
     const isMock = process.env.KIWOOM_IS_MOCK !== 'false'; // Default to mock environment if not explicitly false
     const appKey = process.env.KIWOOM_APP_KEY || '';
     const appSecret = process.env.KIWOOM_APP_SECRET || '';
-    const baseUrl = isMock ? 'https://mockapi.kiwoom.com' : 'https://api.kiwoom.com';
+
+    // Normalize baseUrl:
+    // Kiwoom REST API gateway is https://api.kiwoom.com (mock: https://mockapi.kiwoom.com).
+    // Note: https://openapi.kiwoom.com is Kiwoom's web portal website (which returns 404 for REST API /oauth2/token).
+    // If openapi.kiwoom.com is configured, automatically normalize to api.kiwoom.com for REST endpoints.
+    let baseUrl = process.env.KIWOOM_BASE_URL || (isMock ? 'https://mockapi.kiwoom.com' : 'https://api.kiwoom.com');
+    if (baseUrl.includes('openapi.kiwoom.com')) {
+      console.log('[Kiwoom API] Info: openapi.kiwoom.com is Kiwoom Web Portal. Normalizing REST API gateway to api.kiwoom.com');
+      baseUrl = baseUrl.replace('openapi.kiwoom.com', 'api.kiwoom.com');
+    }
     const wsUrl = isMock ? 'wss://mockapi.kiwoom.com:10000/api/dostk/websocket' : 'wss://api.kiwoom.com:10000/api/dostk/websocket';
 
     this.config = {
@@ -536,6 +600,160 @@ class KiwoomApiService {
   private stockPriceCache: Map<string, { data: Partial<Stock>; expiresAt: number }> = new Map();
 
   /**
+   * Helper: Parse and normalize Kiwoom Stock Quote Response
+   * 
+   * Strict Specification Handling:
+   * 1. Supports Flat response: { cur_prc, base_pric, pred_pre, flu_rt, pre_sig, stk_nm, ... }
+   * 2. Supports Nested structures: { output: { ... } }, { output: [ { ... } ] }, { data: { ... } }
+   * 3. Field aliases:
+   *    - Current Price: cur_prc, stck_prpr, prpr, now_prc, lastPrice
+   *    - Base/Close Price: base_pric, stck_clpr, close_pric, bfdy_clpr, stck_sdpr, stck_bspr, prev_close
+   *    - Change: pred_pre, prdy_vrss, diff, chg_amt
+   *    - Fluctuation Rate: flu_rt, prdy_ctrt, chg_rate
+   *    - Sign: pre_sig, prdy_vrss_sign, sign
+   * 4. Number sanitization:
+   *    - Strips commas ',' (e.g. "70,000" -> 70000, preventing JS parseInt comma cutoff bug)
+   *    - Strips percentage signs (e.g. "-1.45%" -> -1.45)
+   * 5. Sign (+ / -) rules:
+   *    - '4' (하한), '5' (하락), '-', '하락', '하한' => change forced negative
+   *    - '1' (상한), '2' (상승), '+', '상승', '상한' => change forced positive
+   *    - '3' (보합), '0', '보합' => change = 0
+   *    - Aligns changePercent sign with change sign
+   * 6. Weekend & Market Closed Handling:
+   *    - If real-time execution price is 0 or empty, falls back to recent trading day close (base_pric)
+   * 7. Detailed console.log output for auditability.
+   */
+  public parseKiwoomStockQuote(symbol: string, rawData: any): Partial<Stock> & { isWeekendOrMarketClosedFallback?: boolean } {
+    if (!rawData || typeof rawData !== 'object') {
+      throw new Error(`[Kiwoom API] 유효하지 않은 응답 데이터 객체입니다.`);
+    }
+
+    // Unnest container if wrapped in output, output1, data, or array
+    let target: any = rawData;
+    let containerType = 'root';
+    if (rawData.output && typeof rawData.output === 'object') {
+      target = Array.isArray(rawData.output) ? (rawData.output[0] || {}) : rawData.output;
+      containerType = Array.isArray(rawData.output) ? 'output[0]' : 'output';
+    } else if (rawData.output1 && typeof rawData.output1 === 'object') {
+      target = Array.isArray(rawData.output1) ? (rawData.output1[0] || {}) : rawData.output1;
+      containerType = 'output1';
+    } else if (rawData.data && typeof rawData.data === 'object') {
+      target = Array.isArray(rawData.data) ? (rawData.data[0] || {}) : rawData.data;
+      containerType = 'data';
+    }
+
+    // 1. Current Price (현재가/체결가)
+    const rawCurPrc = target.cur_prc ?? target.stck_prpr ?? target.prpr ?? target.now_prc ?? target.lastPrice;
+    let price = Math.abs(parseCleanInt(rawCurPrc, 0));
+
+    // 2. Base Price / Recent Trading Day Close (기준가 / 최근 거래일 종가)
+    const rawBasePric = target.base_pric ?? target.stck_clpr ?? target.close_pric ?? target.bfdy_clpr ?? target.stck_sdpr ?? target.stck_bspr ?? target.prev_close;
+    const basePrice = Math.abs(parseCleanInt(rawBasePric, price));
+
+    // 3. Weekend & Market Closed Fallback:
+    // If real-time execution price is 0 or unavailable (market closed, weekend, before open),
+    // use recent trading day closing price (basePrice) so the UI displays valid price.
+    let isWeekendOrMarketClosed = false;
+    if (price <= 0 && basePrice > 0) {
+      price = basePrice;
+      isWeekendOrMarketClosed = true;
+    }
+
+    // 4. Change (전일대비) & Sign (부호)
+    const rawPredPre = target.pred_pre ?? target.prdy_vrss ?? target.diff ?? target.chg_amt;
+    let change = parseCleanInt(rawPredPre, 0);
+
+    const signCode = String(target.pre_sig ?? target.prdy_vrss_sign ?? target.sign ?? '').trim();
+    if (signCode === '4' || signCode === '5' || signCode === '-' || signCode === '하락' || signCode === '하한') {
+      change = -Math.abs(change);
+    } else if (signCode === '1' || signCode === '2' || signCode === '+' || signCode === '상승' || signCode === '상한') {
+      change = Math.abs(change);
+    } else if (signCode === '3' || signCode === '0' || signCode === '보합') {
+      change = 0;
+    }
+
+    // 5. Fluctuation Rate (등락률)
+    const rawFluRt = target.flu_rt ?? target.prdy_ctrt ?? target.chg_rate;
+    let changePercent = parseCleanFloat(rawFluRt, 0);
+    if (change < 0 && changePercent > 0) {
+      changePercent = -changePercent;
+    } else if (change > 0 && changePercent < 0) {
+      changePercent = Math.abs(changePercent);
+    } else if (changePercent === 0 && basePrice > 0 && change !== 0) {
+      changePercent = Number(((change / basePrice) * 100).toFixed(2));
+    }
+
+    // 6. Volume & Day Range
+    const rawVol = target.trde_qty ?? target.acml_vol ?? target.vol ?? target.now_trde_qty;
+    const volume = Math.abs(parseCleanInt(rawVol, 0));
+
+    const rawOpen = target.open_pric ?? target.stck_oprc ?? target.oprc;
+    const openPrice = Math.abs(parseCleanInt(rawOpen, price)) || price;
+
+    const rawHigh = target.high_pric ?? target.stck_hgpr ?? target.hgpr;
+    const highPrice = Math.abs(parseCleanInt(rawHigh, price)) || price;
+
+    const rawLow = target.low_pric ?? target.stck_lwpr ?? target.lwpr;
+    const lowPrice = Math.abs(parseCleanInt(rawLow, price)) || price;
+
+    const prevClose = basePrice > 0 ? basePrice : (price - change);
+
+    // 7. Additional Metrics
+    const high52w = Math.abs(parseCleanInt(target['250hgst'] ?? target.oyr_hgst ?? target.w52_hgpr, Math.round(price * 1.3)));
+    const low52w = Math.abs(parseCleanInt(target['250lwst'] ?? target.oyr_lwst ?? target.w52_lwpr, Math.round(price * 0.7)));
+    const marketCap = Math.abs(parseCleanInt(target.mac ?? target.hts_avls ?? target.mrkt_tot_amt, 0)) || 
+      Math.round((price * parseCleanInt(target.flo_stk, 1000000)) / 100000000);
+    const per = parseCleanFloat(target.per, 15.2);
+    const pbr = parseCleanFloat(target.pbr, 1.4);
+    const eps = Math.abs(parseCleanInt(target.eps, Math.round(price / 15.2)));
+    const name = target.stk_nm ?? target.prdt_name ?? target.rprs_mrkt_kor_name ?? undefined;
+
+    // Detailed console audit log
+    console.log(`[Kiwoom API] === Quote Field Parsing for ${symbol} (${name || '종목'}) [Container: ${containerType}] ===`, {
+      symbol,
+      name,
+      price,
+      prevClose,
+      change,
+      changePercent: `${changePercent}%`,
+      volume,
+      signCode: signCode || 'N/A',
+      isWeekendOrMarketClosedFallback: isWeekendOrMarketClosed,
+      rawFields: {
+        cur_prc: rawCurPrc,
+        base_pric: rawBasePric,
+        pred_pre: rawPredPre,
+        flu_rt: rawFluRt,
+        pre_sig: signCode,
+      }
+    });
+
+    if (isWeekendOrMarketClosed) {
+      console.log(`[Kiwoom API] Info: 주말/장마감 시간대 감지 (${symbol}). 체결가 0 대신 최근 거래일 종가(${price}원)를 정상 반환합니다.`);
+    }
+
+    return {
+      symbol,
+      name,
+      price,
+      change,
+      changePercent,
+      volume,
+      openPrice,
+      highPrice,
+      lowPrice,
+      prevClose,
+      high52w,
+      low52w,
+      marketCap,
+      per,
+      pbr,
+      eps,
+      isWeekendOrMarketClosedFallback: isWeekendOrMarketClosed,
+    };
+  }
+
+  /**
    * 2. Inquire Stock Current Price (주식기본정보 & 체결정보)
    * Kiwoom REST API Endpoint: /api/dostk/stkinfo
    * TR: ka10001 (기본정보: 현재가, 전일대비, 등락률, 시가, 고가, 저가, 거래량, 시총 등)
@@ -564,6 +782,7 @@ class KiwoomApiService {
           'authorization': `Bearer ${token}`,
           'appkey': this.config.appKey,
           'appsecret': this.config.appSecret,
+          'secretkey': this.config.appSecret,
           'api-id': 'ka10001',
         },
         body: JSON.stringify({ stk_cd: symbol }),
@@ -593,26 +812,8 @@ class KiwoomApiService {
       break;
     }
 
-    const price = Math.abs(parseInt(data1.cur_prc, 10)) || 0;
-    const basePric = Math.abs(parseInt(data1.base_pric, 10)) || price;
-    let change = parseInt(data1.pred_pre, 10) || 0;
-    if (data1.pre_sig === '4' || data1.pre_sig === '5') {
-      change = -Math.abs(change);
-    } else if (data1.pre_sig === '1' || data1.pre_sig === '2') {
-      change = Math.abs(change);
-    }
-    const changePercent = parseFloat(data1.flu_rt) || (basePric > 0 ? Number(((change / basePric) * 100).toFixed(2)) : 0);
-    const volume = Math.abs(parseInt(data1.trde_qty, 10)) || 0;
-    const openPrice = Math.abs(parseInt(data1.open_pric, 10)) || price;
-    const highPrice = Math.abs(parseInt(data1.high_pric, 10)) || price;
-    const lowPrice = Math.abs(parseInt(data1.low_pric, 10)) || price;
-    const prevClose = basePric;
-    const high52w = Math.abs(parseInt(data1['250hgst'] || data1.oyr_hgst, 10)) || Math.round(price * 1.3);
-    const low52w = Math.abs(parseInt(data1['250lwst'] || data1.oyr_lwst, 10)) || Math.round(price * 0.7);
-    const marketCap = Math.abs(parseInt(data1.mac, 10)) || Math.round((price * (parseInt(data1.flo_stk, 10) || 1000000)) / 100000000);
-    const per = parseFloat(data1.per) || 15.2;
-    const pbr = parseFloat(data1.pbr) || 1.4;
-    const eps = Math.abs(parseInt(data1.eps, 10)) || Math.round(price / 15.2);
+    // Standardized Parsing with sign correction, comma stripping, and weekend closing price fallback
+    const stockResult = this.parseKiwoomStockQuote(symbol, data1);
 
     // 2. Inquire Execution Info via ka10003 for acc_trde_prica (원 단위)
     let tradingValue = 0;
@@ -624,16 +825,17 @@ class KiwoomApiService {
           'authorization': `Bearer ${token}`,
           'appkey': this.config.appKey,
           'appsecret': this.config.appSecret,
+          'secretkey': this.config.appSecret,
           'api-id': 'ka10003',
         },
         body: JSON.stringify({ stk_cd: symbol }),
       });
       if (res3.ok) {
         const data3 = await res3.json();
-        const latestCntr = data3.cntr_infr?.[0];
+        const latestCntr = data3.cntr_infr?.[0] || data3.output?.[0] || data3.data?.[0];
         if (latestCntr && latestCntr.acc_trde_prica) {
-          const rawWon = Number(latestCntr.acc_trde_prica);
-          if (!isNaN(rawWon) && rawWon > 0) {
+          const rawWon = parseCleanInt(latestCntr.acc_trde_prica, 0);
+          if (rawWon > 0) {
             // 원 -> 억원 변환
             tradingValue = Math.round(rawWon / 100000000);
           }
@@ -643,29 +845,10 @@ class KiwoomApiService {
       // Fallback if ka10003 fails
     }
 
-    if (tradingValue <= 0) {
-      tradingValue = Math.round((price * volume) / 100000000);
+    if (tradingValue <= 0 && stockResult.price && stockResult.volume) {
+      tradingValue = Math.round((stockResult.price * stockResult.volume) / 100000000);
     }
-
-    const stockResult: Partial<Stock> = {
-      symbol,
-      name: data1.stk_nm || undefined,
-      price,
-      change,
-      changePercent,
-      volume,
-      openPrice,
-      highPrice,
-      lowPrice,
-      prevClose,
-      tradingValue, // in 억 원
-      high52w,
-      low52w,
-      marketCap,
-      per,
-      pbr,
-      eps,
-    };
+    stockResult.tradingValue = tradingValue;
 
     // Cache for 3 seconds to preserve API rate limits
     this.stockPriceCache.set(symbol, {
@@ -706,20 +889,21 @@ class KiwoomApiService {
       throw new Error(`Kiwoom 업종/지수 조회 실패: ${data.return_msg || res.status}`);
     }
 
-    const curPrc = Math.abs(parseFloat(data.cur_prc)) || 0;
-    const change = parseFloat(data.pred_pre) || 0;
-    const changePercent = parseFloat(data.flu_rt) || 0;
-    const high = Math.abs(parseFloat(data.high_pric)) || curPrc;
-    const low = Math.abs(parseFloat(data.low_pric)) || curPrc;
-    const volume = Math.abs(parseInt(data.trde_qty, 10)) || 0;
-    const tradingValue = Math.round((Math.abs(parseInt(data.trde_prica, 10)) || 0) / 100); // 백만원 -> 억원
-    const advanceCount = parseInt(data.rising, 10) || 450;
-    const declineCount = parseInt(data.fall, 10) || 380;
+    const curPrc = Math.abs(parseCleanFloat(data.cur_prc, 0));
+    const change = parseCleanFloat(data.pred_pre, 0);
+    const changePercent = parseCleanFloat(data.flu_rt, 0);
+    const high = Math.abs(parseCleanFloat(data.high_pric, curPrc)) || curPrc;
+    const low = Math.abs(parseCleanFloat(data.low_pric, curPrc)) || curPrc;
+    const volume = Math.abs(parseCleanInt(data.trde_qty, 0));
+    const rawTrdePrica = Math.abs(parseCleanInt(data.trde_prica, 0));
+    const tradingValue = Math.round(rawTrdePrica / 100); // 백만원 -> 억원
+    const advanceCount = parseCleanInt(data.rising, 450);
+    const declineCount = parseCleanInt(data.fall, 380);
 
     let sparkline: number[] = [];
     if (Array.isArray(data.inds_cur_prc_tm) && data.inds_cur_prc_tm.length > 0) {
       sparkline = data.inds_cur_prc_tm
-        .map((item: any) => Math.abs(parseFloat(item.cur_prc_n)))
+        .map((item: any) => Math.abs(parseCleanFloat(item.cur_prc_n, 0)))
         .filter((val: number) => !isNaN(val) && val > 0)
         .reverse()
         .slice(-10);
@@ -843,9 +1027,9 @@ class KiwoomApiService {
       const code = String(item.stk_cd || '').trim();
       const master = this.getMasterStock(code);
       const name = String(item.stk_nm || master?.name || code).trim();
-      const price = Math.abs(parseInt(item.cur_prc, 10)) || 0;
+      const price = Math.abs(parseCleanInt(item.cur_prc, 0));
       
-      let change = parseInt(item.pred_pre, 10) || 0;
+      let change = parseCleanInt(item.pred_pre, 0);
       const sig = String(item.pred_pre_sig || '').trim();
       if (sig === '4' || sig === '5') {
         change = -Math.abs(change);
@@ -853,22 +1037,22 @@ class KiwoomApiService {
         change = Math.abs(change);
       }
       
-      let changePercent = parseFloat(item.flu_rt) || 0;
+      let changePercent = parseCleanFloat(item.flu_rt, 0);
       if (sig === '4' || sig === '5') {
         changePercent = -Math.abs(changePercent);
       } else if (sig === '1' || sig === '2') {
         changePercent = Math.abs(changePercent);
       }
 
-      const volume = Math.abs(parseInt(item.now_trde_qty || item.trde_qty, 10)) || 0;
+      const volume = Math.abs(parseCleanInt(item.now_trde_qty || item.trde_qty, 0));
 
       // Trading value in 억 원
       let tradingValue = 0;
       if (item.trde_prica) {
-        const val = parseInt(item.trde_prica, 10) || 0;
+        const val = parseCleanInt(item.trde_prica, 0);
         tradingValue = val > 10000000 ? Math.round(val / 100000000) : val;
       } else if (item.trde_amt) {
-        const val = parseInt(item.trde_amt, 10) || 0;
+        const val = parseCleanInt(item.trde_amt, 0);
         tradingValue = val > 10000000 ? Math.round(val / 100000000) : Math.round(val / 100);
       }
       if (tradingValue <= 0 && price > 0 && volume > 0) {
@@ -1197,7 +1381,9 @@ class KiwoomApiService {
       throw new Error(`Kiwoom 호가 조회 실패: ${data.return_msg || res.status}`);
     }
 
-    const currentPrice = Math.abs(parseInt(data.sel_fpr_bid || data.buy_fpr_bid, 10)) || 0;
+    // 1. Current Price (최우선 매도/매수호가 기준가) - 부호(+/-) 및 쉼표 제거 후 Math.abs 처리
+    const rawCur = String(data.sel_fpr_bid || data.buy_fpr_bid || '').replace(/[+,-]/g, '').trim();
+    const currentPrice = Math.abs(parseInt(rawCur, 10)) || 0;
     const prevClose = currentPrice;
 
     const asks: OrderBookLevel[] = [];
@@ -1205,8 +1391,10 @@ class KiwoomApiService {
     for (let i = 10; i >= 1; i--) {
       const priceKey = i === 1 ? 'sel_fpr_bid' : `sel_${i}th_pre_bid`;
       const volKey = i === 1 ? 'sel_fpr_req' : `sel_${i}th_pre_req`;
-      const askPrice = Math.abs(parseInt(data[priceKey], 10)) || 0;
-      const vol = Math.abs(parseInt(data[volKey], 10)) || 0;
+      const rawPrice = String(data[priceKey] || '').replace(/[+,-]/g, '').trim();
+      const rawVol = String(data[volKey] || '').replace(/[+,-]/g, '').trim();
+      const askPrice = Math.abs(parseInt(rawPrice, 10)) || 0;
+      const vol = Math.abs(parseInt(rawVol, 10)) || 0;
       const chg = prevClose > 0 && askPrice > 0 ? askPrice - prevClose : 0;
       const chgPct = prevClose > 0 && askPrice > 0 ? Number(((chg / prevClose) * 100).toFixed(2)) : 0;
       asks.push({
@@ -1223,8 +1411,10 @@ class KiwoomApiService {
     for (let i = 1; i <= 10; i++) {
       const priceKey = i === 1 ? 'buy_fpr_bid' : `buy_${i}th_pre_bid`;
       const volKey = i === 1 ? 'buy_fpr_req' : `buy_${i}th_pre_req`;
-      const bidPrice = Math.abs(parseInt(data[priceKey], 10)) || 0;
-      const vol = Math.abs(parseInt(data[volKey], 10)) || 0;
+      const rawPrice = String(data[priceKey] || '').replace(/[+,-]/g, '').trim();
+      const rawVol = String(data[volKey] || '').replace(/[+,-]/g, '').trim();
+      const bidPrice = Math.abs(parseInt(rawPrice, 10)) || 0;
+      const vol = Math.abs(parseInt(rawVol, 10)) || 0;
       const chg = prevClose > 0 && bidPrice > 0 ? bidPrice - prevClose : 0;
       const chgPct = prevClose > 0 && bidPrice > 0 ? Number(((chg / prevClose) * 100).toFixed(2)) : 0;
       bids.push({
@@ -1240,8 +1430,14 @@ class KiwoomApiService {
     asks.forEach(a => a.barPercent = Math.min(100, Math.round((a.volume / maxVol) * 100)));
     bids.forEach(b => b.barPercent = Math.min(100, Math.round((b.volume / maxVol) * 100)));
 
-    const totalAskVolume = Math.abs(parseInt(data.tot_sel_req, 10)) || asks.reduce((sum, a) => sum + a.volume, 0);
-    const totalBidVolume = Math.abs(parseInt(data.tot_buy_req, 10)) || bids.reduce((sum, b) => sum + b.volume, 0);
+    const rawTotalAsk = String(data.tot_sel_req || '').replace(/[+,-]/g, '').trim();
+    const rawTotalBid = String(data.tot_buy_req || '').replace(/[+,-]/g, '').trim();
+    const totalAskVolume = Math.abs(parseInt(rawTotalAsk, 10)) || asks.reduce((sum, a) => sum + a.volume, 0);
+    const totalBidVolume = Math.abs(parseInt(rawTotalBid, 10)) || bids.reduce((sum, b) => sum + b.volume, 0);
+
+    // 체결 기준가 정합성: 매수는 최우선 매도호가(Ask 1), 매도는 최우선 매수호가(Bid 1)
+    const bestAskPrice = asks.length > 0 ? asks[asks.length - 1].price : currentPrice;
+    const bestBidPrice = bids.length > 0 ? bids[0].price : currentPrice;
 
     return {
       symbol,
@@ -1250,6 +1446,8 @@ class KiwoomApiService {
       bids,
       totalAskVolume,
       totalBidVolume,
+      bestAskPrice,
+      bestBidPrice,
     };
   }
 
@@ -1453,6 +1651,74 @@ class KiwoomApiService {
         statusMessage: `토큰 발급 실패로 인해 키움 실전 시세 조회가 진행되지 않았습니다. (토큰 오류: ${result.tokenTest.returnMsg || result.tokenTest.error || '미인증'})`,
       };
     }
+
+    // 3-B. Self-Validation: Validate Field Parsing Logic across 4 Critical Real Scenarios
+    // Case 1: Standard Kiwoom flat format
+    // Case 2: Comma-formatted strings with negative numbers
+    // Case 3: Standard nested output structure (stck_prpr, stck_clpr, prdy_vrss, prdy_ctrt)
+    // Case 4: Weekend / Market closed (cur_prc: "0", fallback to base_pric/recent close)
+    const testCases = [
+      {
+        scenario: '1. 표준 키움 단일 평면 객체 (ka10001)',
+        raw: { stk_cd: '005930', stk_nm: '삼성전자', cur_prc: '70000', base_pric: '69500', pred_pre: '500', flu_rt: '0.72', pre_sig: '2', trde_qty: '12500000' },
+        expectedPrice: 70000,
+        expectedChange: 500,
+        expectedChangePercent: 0.72,
+        expectWeekendFallback: false,
+      },
+      {
+        scenario: '2. 콤마(,) 포함 문자열 및 음수 하락 부호 (pre_sig: 5)',
+        raw: { stk_cd: '000660', stk_nm: 'SK하이닉스', cur_prc: '175,000', base_pric: '180,000', pred_pre: '5,000', flu_rt: '2.78%', pre_sig: '5', trde_qty: '3,200,500' },
+        expectedPrice: 175000,
+        expectedChange: -5000,
+        expectedChangePercent: -2.78,
+        expectWeekendFallback: false,
+      },
+      {
+        scenario: '3. 표준 중첩 output 구조 및 KIS 필드명 (stck_prpr, stck_clpr, prdy_vrss)',
+        raw: { return_code: 0, output: { stk_cd: '005380', prdt_name: '현대차', stck_prpr: '240,500', stck_clpr: '238,000', prdy_vrss: '+2,500', prdy_ctrt: '+1.05', prdy_vrss_sign: '2', acml_vol: '850,000' } },
+        expectedPrice: 240500,
+        expectedChange: 2500,
+        expectedChangePercent: 1.05,
+        expectWeekendFallback: false,
+      },
+      {
+        scenario: '4. 주말/장마감 시간대 체결가 0원 -> 최근 거래일 종가(base_pric) 정상 대체',
+        raw: { stk_cd: '005930', stk_nm: '삼성전자', cur_prc: '0', base_pric: '70,000', pred_pre: '0', flu_rt: '0.00', pre_sig: '3', trde_qty: '0' },
+        expectedPrice: 70000,
+        expectedChange: 0,
+        expectedChangePercent: 0,
+        expectWeekendFallback: true,
+      },
+    ];
+
+    const parseResults = testCases.map(tc => {
+      const parsed = this.parseKiwoomStockQuote(tc.raw.stk_cd || (tc.raw.output as any)?.stk_cd || '005930', tc.raw);
+      const passPrice = parsed.price === tc.expectedPrice;
+      const passChange = parsed.change === tc.expectedChange;
+      const passRate = Math.abs((parsed.changePercent || 0) - tc.expectedChangePercent) < 0.05;
+      const passWeekend = !!parsed.isWeekendOrMarketClosedFallback === tc.expectWeekendFallback;
+      return {
+        scenario: tc.scenario,
+        expectedPrice: tc.expectedPrice,
+        parsedPrice: parsed.price || 0,
+        expectedChange: tc.expectedChange,
+        parsedChange: parsed.change || 0,
+        expectedChangePercent: tc.expectedChangePercent,
+        parsedChangePercent: parsed.changePercent || 0,
+        isWeekendFallback: !!parsed.isWeekendOrMarketClosedFallback,
+        success: passPrice && passChange && passRate && passWeekend,
+      };
+    });
+
+    const passedCount = parseResults.filter(r => r.success).length;
+    result.parseValidationTest = {
+      attempted: true,
+      success: passedCount === testCases.length,
+      testCasesPassed: passedCount,
+      totalTestCases: testCases.length,
+      results: parseResults,
+    };
 
     // 4. Test US Stock AAPL (애플) - Verify delayed status, timestamp, source, currency
     try {

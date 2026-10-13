@@ -56,6 +56,9 @@ export const Navbar: React.FC = () => {
     logout,
     setIsAuthModalOpen,
     navigateToMyPosts,
+    isSideChatOpen,
+    toggleSideChat,
+    unreadChatCount,
   } = useApp();
 
   const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
@@ -156,7 +159,7 @@ export const Navbar: React.FC = () => {
       icon: <Bell className="w-4 h-4 shrink-0" />, 
       badge: unreadNotifCount > 0 ? `${unreadNotifCount}` : undefined 
     },
-    ...(user?.role === 'admin' ? [{ tab: 'admin' as ViewTab, label: '관리자', icon: <Shield className="w-4 h-4 text-indigo-500 shrink-0" /> }] : []),
+    ...(user?.role === 'admin' || user?.role === 'superadmin' ? [{ tab: 'admin' as ViewTab, label: '관리자', icon: <Shield className="w-4 h-4 text-indigo-500 shrink-0" /> }] : []),
   ];
 
   return (
@@ -396,21 +399,33 @@ export const Navbar: React.FC = () => {
               <span className="whitespace-nowrap shrink-0">뉴스</span>
             </button>
 
-            {/* Live Chat Button (Independent Flex Item) */}
+            {/* Live Chat Button: Toggles SideChatPanel or opens Chat tab */}
             <button
-              onClick={() => setActiveTab('chat')}
-              className={`hidden sm:flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-semibold transition-colors shrink-0 cursor-pointer ${
-                activeTab === 'chat'
+              onClick={() => {
+                if (window.innerWidth >= 1024) {
+                  toggleSideChat();
+                } else {
+                  setActiveTab('chat');
+                }
+              }}
+              className={`hidden sm:flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-semibold transition-colors shrink-0 cursor-pointer relative ${
+                activeTab === 'chat' || (isSideChatOpen && window.innerWidth >= 1024)
                   ? 'bg-rose-50 dark:bg-rose-500/10 text-rose-600 dark:text-rose-400 font-bold'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800/60'
               }`}
-              title="실시간 채팅"
+              title="실시간 채팅 패널 토글"
             >
               <MessageSquare className="w-3.5 h-3.5 text-rose-500 shrink-0" />
               <span className="whitespace-nowrap shrink-0">채팅</span>
-              <span className="px-1 py-0.2 rounded-full text-[9px] font-black bg-rose-500 text-white shrink-0">
-                LIVE
-              </span>
+              {unreadChatCount > 0 ? (
+                <span className="px-1 py-0.2 rounded-full text-[9px] font-black bg-rose-500 text-white shrink-0 animate-pulse">
+                  {unreadChatCount > 99 ? '99+' : unreadChatCount}
+                </span>
+              ) : (
+                <span className="px-1 py-0.2 rounded-full text-[9px] font-black bg-rose-500 text-white shrink-0">
+                  LIVE
+                </span>
+              )}
             </button>
 
             {/* Notification Alerts Button (Independent Flex Item) */}
@@ -432,7 +447,7 @@ export const Navbar: React.FC = () => {
             </button>
 
             {/* Admin Console Quick Button (Admin Only, Independent Flex Item) */}
-            {user?.role === 'admin' && (
+            {(user?.role === 'admin' || user?.role === 'superadmin') && (
               <button
                 onClick={() => {
                   setActiveTab('admin');
@@ -497,9 +512,9 @@ export const Navbar: React.FC = () => {
                     <span className="text-xs font-bold text-slate-800 dark:text-slate-200 whitespace-nowrap">
                       {user.name}
                     </span>
-                    {user.role === 'admin' ? (
+                    {(user.role === 'admin' || user.role === 'superadmin') ? (
                       <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-rose-500/10 text-rose-500 border border-rose-500/20 whitespace-nowrap">
-                        총괄관리자
+                        {user.role === 'superadmin' ? '최고관리자' : '총괄관리자'}
                       </span>
                     ) : (
                       <span className="hidden xl:inline-block px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-500/10 text-amber-500 whitespace-nowrap">
@@ -523,9 +538,9 @@ export const Navbar: React.FC = () => {
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-500">
                           {user.tier}
                         </span>
-                        {user.role === 'admin' && (
+                        {(user.role === 'admin' || user.role === 'superadmin') && (
                           <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-500">
-                            총괄관리자
+                            {user.role === 'superadmin' ? '최고관리자' : '총괄관리자'}
                           </span>
                         )}
                       </div>

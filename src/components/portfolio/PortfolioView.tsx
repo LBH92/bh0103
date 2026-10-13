@@ -956,11 +956,12 @@ export const PortfolioView: React.FC = () => {
                 <table className="w-full text-left text-xs border-collapse">
                   <thead>
                     <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 text-[11px] text-slate-500 uppercase">
-                      <th className="py-2.5 px-4 font-semibold">체결일시</th>
+                      <th className="py-2.5 px-4 font-semibold">주문/체결일시</th>
                       <th className="py-2.5 px-3 font-semibold">구분</th>
+                      <th className="py-2.5 px-3 font-semibold">상태</th>
                       <th className="py-2.5 px-3 font-semibold">종목명</th>
                       <th className="py-2.5 px-3 font-semibold text-right">체결단가</th>
-                      <th className="py-2.5 px-3 font-semibold text-right">체결수량</th>
+                      <th className="py-2.5 px-3 font-semibold text-right">체결/주문수량</th>
                       <th className="py-2.5 px-3 font-semibold text-right">정산금액</th>
                       <th className="py-2.5 px-3 font-semibold text-right">실현손익</th>
                       <th className="py-2.5 px-4 font-semibold">매매 전략/사유</th>
@@ -969,6 +970,9 @@ export const PortfolioView: React.FC = () => {
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 font-mono">
                     {mockOrders.map(o => {
                       const isSell = o.orderType === 'SELL';
+                      const isUSD = o.currency === 'USD';
+                      const currSymbol = isUSD ? '$' : '원';
+                      const status = o.status || 'FILLED';
 
                       return (
                         <tr key={o.id} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/20">
@@ -984,22 +988,50 @@ export const PortfolioView: React.FC = () => {
                               {isSell ? '가상 매도' : '가상 매수'}
                             </span>
                           </td>
+                          <td className="py-2.5 px-3">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              status === 'FILLED'
+                                ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                                : status === 'PARTIALLY_FILLED'
+                                ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                                : status === 'CANCELLED'
+                                ? 'bg-slate-500/10 text-slate-500'
+                                : 'bg-indigo-500/10 text-indigo-500'
+                            }`}>
+                              {status === 'FILLED'
+                                ? '체결완료'
+                                : status === 'PARTIALLY_FILLED'
+                                ? `부분체결 (${o.filledQuantity ?? o.quantity}/${o.requestedQuantity ?? o.quantity})`
+                                : status === 'CANCELLED'
+                                ? '주문취소'
+                                : '대기(미체결)'}
+                            </span>
+                          </td>
                           <td className="py-2.5 px-3 font-sans font-bold text-slate-900 dark:text-white">
                             {o.name}
                           </td>
                           <td className="py-2.5 px-3 text-right">
-                            {o.price.toLocaleString()}원
+                            {status === 'PENDING' && (o.filledQuantity ?? 0) === 0 ? (
+                              <span className="text-slate-400 text-[11px]">미체결 대기</span>
+                            ) : (
+                              `${isUSD ? '$' : ''}${o.price.toLocaleString()}${isUSD ? '' : '원'}`
+                            )}
                           </td>
                           <td className="py-2.5 px-3 text-right font-bold">
-                            {o.quantity.toLocaleString()}주
+                            {status === 'PARTIALLY_FILLED'
+                              ? `${(o.filledQuantity ?? 0).toLocaleString()}주 / ${(o.requestedQuantity ?? o.quantity).toLocaleString()}주`
+                              : `${o.quantity.toLocaleString()}주`}
                           </td>
                           <td className="py-2.5 px-3 text-right">
-                            {o.settledAmount.toLocaleString()}원
+                            {status === 'PENDING' && (o.filledQuantity ?? 0) === 0
+                              ? '-'
+                              : `${isUSD ? '$' : ''}${o.settledAmount.toLocaleString()}${isUSD ? '' : '원'}`}
                           </td>
                           <td className="py-2.5 px-3 text-right">
-                            {isSell && o.realizedProfit !== undefined ? (
+                            {isSell && o.realizedProfit !== undefined && status !== 'PENDING' ? (
                               <span className={o.realizedProfit >= 0 ? 'text-rose-500 font-bold' : 'text-blue-500 font-bold'}>
-                                {o.realizedProfit >= 0 ? '+' : ''}{o.realizedProfit.toLocaleString()}원
+                                {o.realizedProfit >= 0 ? '+' : ''}
+                                {isUSD ? `$${o.realizedProfit.toFixed(2)}` : `${o.realizedProfit.toLocaleString()}원`}
                                 <span className="text-[10px] block">
                                   ({o.realizedProfitRate && o.realizedProfitRate >= 0 ? '+' : ''}{o.realizedProfitRate?.toFixed(2)}%)
                                 </span>

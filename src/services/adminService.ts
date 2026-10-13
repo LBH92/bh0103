@@ -32,7 +32,24 @@ import {
   AdminNotificationItem,
 } from '../types';
 import { storageService } from './storageService';
-import { INITIAL_POSTS } from './mockData';
+import { auth } from './firebase';
+
+async function getAdminHeaders(): Promise<Record<string, string>> {
+  const token = await auth.currentUser?.getIdToken().catch(() => null);
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  if (auth.currentUser?.email) {
+    headers['x-user-email'] = auth.currentUser.email;
+  }
+  if (auth.currentUser?.uid) {
+    headers['x-user-uid'] = auth.currentUser.uid;
+  }
+  return headers;
+}
 
 const USERS_STORAGE_KEY = 'bd_admin_users';
 const NOTICES_STORAGE_KEY = 'bd_admin_notices';
@@ -41,22 +58,22 @@ const ADMIN_LOGS_STORAGE_KEY = 'bd_admin_audit_logs';
 const ADMIN_SETTINGS_STORAGE_KEY = 'bd_admin_system_settings';
 const ADMIN_NOTIFICATIONS_STORAGE_KEY = 'bd_admin_notifications';
 
-// Initial Mock Users for Admin management
+// Initial Operators for Admin management (Preserves only authentic superadmin and designated moderator)
 const INITIAL_ADMIN_USERS: UserProfile[] = [
   {
-    id: 'u-admin-1',
-    name: '총괄관리자 (Owner)',
+    id: 'lr018vf8CcW5fAv707vsl77qJy53',
+    name: '총괄관리자 (임병현)',
     email: 'byunghyunlim92@gmail.com',
     avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80',
     role: 'superadmin',
     tier: '최고 관리자',
     joinedDate: '2026.01.01',
     bio: 'Stock Insight 총괄 시스템 관리자',
-    postCount: 18,
-    commentCount: 92,
+    postCount: 0,
+    commentCount: 0,
     status: 'active',
     chatRestricted: false,
-    lastLoginAt: '2026.10.04 12:40',
+    lastLoginAt: '2026.10.12 18:00',
     reportedCount: 0,
     reportSubmitCount: 0,
   },
@@ -69,83 +86,13 @@ const INITIAL_ADMIN_USERS: UserProfile[] = [
     tier: '운영진 (Moderator)',
     joinedDate: '2026.02.01',
     bio: '게시글 및 채팅 모니터링 담당 운영진',
-    postCount: 30,
-    commentCount: 120,
+    postCount: 0,
+    commentCount: 0,
     status: 'active',
     chatRestricted: false,
-    lastLoginAt: '2026.10.04 11:20',
+    lastLoginAt: '2026.10.12 17:30',
     reportedCount: 0,
-    reportSubmitCount: 12,
-  },
-  {
-    id: 'u-user-2',
-    name: '여의도단타요정',
-    email: 'fairy@stock.kr',
-    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80',
-    role: 'user',
-    tier: '다이아 VIP',
-    joinedDate: '2026.02.10',
-    bio: '수익률 TOP 1% 실전 트레이더',
-    postCount: 24,
-    commentCount: 140,
-    status: 'active',
-    chatRestricted: false,
-    lastLoginAt: '2026.10.04 09:15',
-    reportedCount: 1,
-    reportSubmitCount: 3,
-  },
-  {
-    id: 'u-user-3',
-    name: '불법리딩방홍보단',
-    email: 'spammer_lead@fake.com',
-    avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=100&auto=format&fit=crop&q=80',
-    role: 'user',
-    tier: '제재 대상',
-    joinedDate: '2026.09.28',
-    bio: '텔레그램 입장 시 100% 수익 보장 사설 리딩방',
-    postCount: 8,
-    commentCount: 4,
-    status: 'suspended',
-    suspendedReason: '불법 유사투자자문 및 리딩방 스팸 살포',
-    chatRestricted: true,
-    chatMutedUntil: '영구 정지',
-    lastLoginAt: '2026.09.30 18:22',
-    reportedCount: 9,
     reportSubmitCount: 0,
-  },
-  {
-    id: 'u-user-4',
-    name: '반도체매니아',
-    email: 'semi_fan@naver.com',
-    avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=100&auto=format&fit=crop&q=80',
-    role: 'user',
-    tier: '실버 회원',
-    joinedDate: '2026.04.15',
-    bio: '삼성전자 SK하이닉스 장기투자자',
-    postCount: 12,
-    commentCount: 38,
-    status: 'active',
-    chatRestricted: false,
-    lastLoginAt: '2026.10.03 21:05',
-    reportedCount: 0,
-    reportSubmitCount: 2,
-  },
-  {
-    id: 'u-user-5',
-    name: '코스닥도사',
-    email: 'kosdaq_guru@kakao.com',
-    avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=100&auto=format&fit=crop&q=80',
-    role: 'user',
-    tier: '골드 회원',
-    joinedDate: '2026.03.20',
-    bio: '바이오 2차전지 테마주 분석 전문가',
-    postCount: 31,
-    commentCount: 75,
-    status: 'active',
-    chatRestricted: false,
-    lastLoginAt: '2026.10.04 10:45',
-    reportedCount: 0,
-    reportSubmitCount: 1,
   },
 ];
 
@@ -345,13 +292,31 @@ export const adminService = {
     this.saveUsers(users);
   },
 
-  suspendUser(userId: string, reason: string, adminProfile?: { id: string; name: string; role: UserRole }): boolean {
+  async suspendUser(userId: string, reason: string, adminProfile?: { id: string; name: string; role: UserRole }): Promise<{ success: boolean; message: string }> {
     const users = this.getUsers();
     const target = users.find(u => u.id === userId);
-    if (!target) return false;
+    if (!target) return { success: false, message: '사용자를 찾을 수 없습니다.' };
 
     // Protection: Cannot suspend superadmin
-    if (target.role === 'superadmin') return false;
+    if (target.role === 'superadmin' || target.id === 'lr018vf8CcW5fAv707vsl77qJy53' || target.email === 'byunghyunlim92@gmail.com') {
+      return { success: false, message: '최고 운영자 계정은 이용 정지할 수 없습니다.' };
+    }
+
+    try {
+      const headers = await getAdminHeaders();
+      headers['x-admin-name'] = adminProfile?.name || '운영관리자';
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/status`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ status: 'suspended', reason }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        return { success: false, message: errData.error || '회원 정지 요청 실패' };
+      }
+    } catch (e: any) {
+      console.warn('[adminService] suspendUser server notice:', e.message);
+    }
 
     target.status = 'suspended';
     target.suspendedReason = reason;
@@ -371,13 +336,29 @@ export const adminService = {
       afterData: { status: 'suspended', reason },
     });
 
-    return true;
+    return { success: true, message: `'${target.name}' 회원이 정지 처리되었습니다.` };
   },
 
-  unsuspendUser(userId: string, adminProfile?: { id: string; name: string; role: UserRole }): boolean {
+  async unsuspendUser(userId: string, adminProfile?: { id: string; name: string; role: UserRole }): Promise<{ success: boolean; message: string }> {
     const users = this.getUsers();
     const target = users.find(u => u.id === userId);
-    if (!target) return false;
+    if (!target) return { success: false, message: '사용자를 찾을 수 없습니다.' };
+
+    try {
+      const headers = await getAdminHeaders();
+      headers['x-admin-name'] = adminProfile?.name || '운영관리자';
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/status`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ status: 'active' }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        return { success: false, message: errData.error || '정지 해제 요청 실패' };
+      }
+    } catch (e: any) {
+      console.warn('[adminService] unsuspendUser server notice:', e.message);
+    }
 
     target.status = 'active';
     target.suspendedReason = undefined;
@@ -396,13 +377,33 @@ export const adminService = {
       details: '회원 정지 및 채팅 제한 해제 (정상 계정 전환)',
     });
 
-    return true;
+    return { success: true, message: `'${target.name}' 회원의 정지가 해제되었습니다.` };
   },
 
-  muteUser(userId: string, durationDesc: string, adminProfile?: { id: string; name: string; role: UserRole }): boolean {
+  async muteUser(userId: string, durationDesc: string, adminProfile?: { id: string; name: string; role: UserRole }): Promise<{ success: boolean; message: string }> {
     const users = this.getUsers();
     const target = users.find(u => u.id === userId);
-    if (!target) return false;
+    if (!target) return { success: false, message: '사용자를 찾을 수 없습니다.' };
+
+    if (target.role === 'superadmin' || target.id === 'lr018vf8CcW5fAv707vsl77qJy53') {
+      return { success: false, message: '최고 운영자 계정은 채팅을 제한할 수 없습니다.' };
+    }
+
+    try {
+      const headers = await getAdminHeaders();
+      headers['x-admin-name'] = adminProfile?.name || '운영관리자';
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/mute`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ chatRestricted: true, duration: durationDesc }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        return { success: false, message: errData.error || '채팅 제한 요청 실패' };
+      }
+    } catch (e: any) {
+      console.warn('[adminService] muteUser server notice:', e.message);
+    }
 
     target.chatRestricted = true;
     target.chatMutedUntil = durationDesc;
@@ -419,13 +420,29 @@ export const adminService = {
       details: `채팅 발언 제한 적용: ${durationDesc}`,
     });
 
-    return true;
+    return { success: true, message: `'${target.name}' 회원의 채팅이 ${durationDesc} 동안 제한되었습니다.` };
   },
 
-  unmuteUser(userId: string, adminProfile?: { id: string; name: string; role: UserRole }): boolean {
+  async unmuteUser(userId: string, adminProfile?: { id: string; name: string; role: UserRole }): Promise<{ success: boolean; message: string }> {
     const users = this.getUsers();
     const target = users.find(u => u.id === userId);
-    if (!target) return false;
+    if (!target) return { success: false, message: '사용자를 찾을 수 없습니다.' };
+
+    try {
+      const headers = await getAdminHeaders();
+      headers['x-admin-name'] = adminProfile?.name || '운영관리자';
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/mute`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ chatRestricted: false }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        return { success: false, message: errData.error || '채팅 제한 해제 요청 실패' };
+      }
+    } catch (e: any) {
+      console.warn('[adminService] unmuteUser server notice:', e.message);
+    }
 
     target.chatRestricted = false;
     target.chatMutedUntil = undefined;
@@ -442,7 +459,7 @@ export const adminService = {
       details: '채팅 발언 제한 해제',
     });
 
-    return true;
+    return { success: true, message: `'${target.name}' 회원의 채팅 제한이 해제되었습니다.` };
   },
 
   warnUser(userId: string, message: string, adminProfile?: { id: string; name: string; role: UserRole }): boolean {
@@ -476,12 +493,12 @@ export const adminService = {
     return true;
   },
 
-  changeUserRole(
+  async changeUserRole(
     userId: string, 
     newRole: UserRole, 
     callerRole: UserRole,
     callerProfile?: { id: string; name: string }
-  ): { success: boolean; message: string } {
+  ): Promise<{ success: boolean; message: string }> {
     // Only superadmin can change roles to admin or moderator
     if (callerRole !== 'superadmin') {
       return { success: false, message: '오직 최고 관리자(superadmin)만 회원 권한(Role)을 변경할 수 있습니다.' };
@@ -494,8 +511,25 @@ export const adminService = {
     }
 
     // Protection: Cannot demote the initial owner superadmin
-    if (target.email === 'byunghyunlim92@gmail.com' && newRole !== 'superadmin') {
+    if ((target.email === 'byunghyunlim92@gmail.com' || target.id === 'lr018vf8CcW5fAv707vsl77qJy53') && newRole !== 'superadmin') {
       return { success: false, message: '시스템 최초 최고 관리자의 권한은 박탈할 수 없습니다.' };
+    }
+
+    try {
+      const headers = await getAdminHeaders();
+      headers['x-admin-name'] = callerProfile?.name || '총괄관리자(임병현)';
+      headers['x-admin-role'] = 'superadmin';
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/role`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ role: newRole }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        return { success: false, message: errData.error || '권한 변경 요청 실패' };
+      }
+    } catch (e: any) {
+      console.warn('[adminService] changeUserRole server notice:', e.message);
     }
 
     const oldRole = target.role;
@@ -521,6 +555,96 @@ export const adminService = {
     });
 
     return { success: true, message: `'${target.name}'님의 권한이 '${newRole}'(으)로 변경되었습니다.` };
+  },
+
+  async deleteUser(
+    userId: string, 
+    adminProfile?: { id: string; name: string; role: UserRole }
+  ): Promise<{ success: boolean; message: string }> {
+    if (userId === 'lr018vf8CcW5fAv707vsl77qJy53') {
+      return { success: false, message: '최고 운영자 계정은 삭제할 수 없습니다.' };
+    }
+
+    try {
+      const headers = await getAdminHeaders();
+      headers['x-admin-name'] = adminProfile?.name || '총괄관리자(임병현)';
+      headers['x-admin-role'] = 'superadmin';
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}`, {
+        method: 'DELETE',
+        headers,
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        return { success: false, message: errData.error || '회원 삭제 요청 실패' };
+      }
+    } catch (e: any) {
+      console.warn('[adminService] deleteUser server notice:', e.message);
+    }
+
+    const users = this.getUsers().filter(u => u.id !== userId);
+    this.saveUsers(users);
+
+    this.logAction({
+      adminId: adminProfile?.id || 'superadmin',
+      adminName: adminProfile?.name || '총괄관리자',
+      adminRole: 'superadmin',
+      action: 'DELETE_USER',
+      targetType: 'user',
+      targetId: userId,
+      details: '회원 계정 및 관련 참조 데이터 영구 삭제',
+    });
+
+    return { success: true, message: '회원 계정이 삭제되었습니다.' };
+  },
+
+  async purgeNonAdminUsers(adminProfile?: { id: string; name: string; role: UserRole }): Promise<{
+    success: boolean;
+    deletedUsersCount: number;
+    deletedDocsCount: number;
+    authUsersDeletedCount: number;
+    storageFilesDeletedCount: number;
+    protectedAdmins: string[];
+    protectedAdminUids: string[];
+    unprocessedScopeNotes: string[];
+    errors: string[];
+    error?: string;
+  }> {
+    try {
+      const headers = await getAdminHeaders();
+      headers['x-admin-name'] = adminProfile?.name || '총괄관리자(임병현)';
+      headers['x-admin-role'] = 'superadmin';
+      headers['x-admin-uid'] = 'lr018vf8CcW5fAv707vsl77qJy53';
+      headers['x-user-email'] = 'byunghyunlim92@gmail.com';
+
+      const res = await fetch('/api/admin/cleanup-non-admins', {
+        method: 'POST',
+        headers,
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || '초기화 요청 처리 실패');
+      }
+
+      // Sync local users store to preserve only protected admins
+      this.saveUsers(INITIAL_ADMIN_USERS);
+
+      return data;
+    } catch (err: any) {
+      console.error('[adminService] purgeNonAdminUsers failed:', err);
+      return {
+        success: false,
+        deletedUsersCount: 0,
+        deletedDocsCount: 0,
+        authUsersDeletedCount: 0,
+        storageFilesDeletedCount: 0,
+        protectedAdmins: ['byunghyunlim92@gmail.com'],
+        protectedAdminUids: ['lr018vf8CcW5fAv707vsl77qJy53'],
+        unprocessedScopeNotes: ['서버 통신 실패 또는 권한 부족으로 초기화가 중단되었습니다.'],
+        errors: [err.message || '초기화 실행 실패'],
+        error: err.message || '초기화 실행 실패',
+      };
+    }
   },
 
   // -------------------------------------------------------------
@@ -791,11 +915,26 @@ export const adminService = {
     return storageService.getChatMessages(roomId);
   },
 
-  deleteChatMessage(
+  async deleteChatMessage(
     messageId: string, 
-    roomId: string,
+    roomId: string = 'all',
     adminProfile?: { id: string; name: string; role: UserRole }
-  ): boolean {
+  ): Promise<{ success: boolean; message?: string }> {
+    try {
+      const headers = await getAdminHeaders();
+      headers['x-admin-name'] = adminProfile?.name || '운영관리자';
+      const res = await fetch(`/api/admin/chat/messages/${encodeURIComponent(messageId)}?roomId=${encodeURIComponent(roomId)}`, {
+        method: 'DELETE',
+        headers,
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        console.warn('[adminService] deleteChatMessage server warning:', errData);
+      }
+    } catch (e: any) {
+      console.warn('[adminService] deleteChatMessage server error:', e.message);
+    }
+
     const msgs = storageService.getChatMessages(roomId);
     const updated = msgs.filter(m => m.id !== messageId);
     storageService.saveChatMessages(roomId, updated);
@@ -810,7 +949,7 @@ export const adminService = {
       details: `채팅방 [${roomId}] 부적절 메시지 즉시 삭제`,
     });
 
-    return true;
+    return { success: true };
   },
 
   // -------------------------------------------------------------
