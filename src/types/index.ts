@@ -188,6 +188,7 @@ export interface UserProfile {
   commentCount: number;
   winRate?: number;
   status?: 'active' | 'suspended' | 'deleted';
+  createdAt?: string;
   chatRestricted?: boolean;
   chatMutedUntil?: string;
   suspendedReason?: string;

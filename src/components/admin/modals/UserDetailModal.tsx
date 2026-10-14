@@ -13,7 +13,8 @@ import {
   Volume2, 
   UserX, 
   UserCheck, 
-  Send
+  Send,
+  Trash2
 } from 'lucide-react';
 import { UserProfile, UserRole } from '../../../types';
 
@@ -27,6 +28,7 @@ interface UserDetailModalProps {
   onUnmute: (userId: string) => void;
   onWarn: (userId: string, message: string) => void;
   onChangeRole: (userId: string, newRole: UserRole) => void;
+  onDeleteUser?: (userId: string) => void;
 }
 
 export const UserDetailModal: React.FC<UserDetailModalProps> = ({
@@ -39,6 +41,7 @@ export const UserDetailModal: React.FC<UserDetailModalProps> = ({
   onUnmute,
   onWarn,
   onChangeRole,
+  onDeleteUser,
 }) => {
   if (!user) return null;
 
@@ -302,6 +305,28 @@ export const UserDetailModal: React.FC<UserDetailModalProps> = ({
                   </div>
                 )}
               </div>
+
+              {/* Permanent Delete Account (Superadmin only) */}
+              {isSuperAdmin && !isOwnerAccount && onDeleteUser && (
+                <div className="p-3.5 bg-rose-50/70 dark:bg-rose-950/20 rounded-xl border border-rose-300 dark:border-rose-900/60 space-y-2">
+                  <span className="font-bold text-rose-700 dark:text-rose-400 block">계정 및 데이터 영구 삭제</span>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    회원의 인증 및 Firestore 프로필 문서를 영구 삭제합니다. 삭제 후 복구할 수 없습니다.
+                  </p>
+                  <button
+                    onClick={() => {
+                      if (window.confirm(`정말로 '${user.name}' 회원의 계정과 모든 데이터를 영구 삭제하시겠습니까?`)) {
+                        onDeleteUser(user.id);
+                        onClose();
+                      }
+                    }}
+                    className="flex items-center gap-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-bold text-xs transition-colors"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>회원 영구 삭제 실행</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>

@@ -6,6 +6,7 @@ import {
   setDoc, 
   updateDoc, 
   deleteDoc, 
+  writeBatch,
   query, 
   where, 
   orderBy, 
@@ -15,7 +16,7 @@ import {
   serverTimestamp 
 } from 'firebase/firestore';
 import { db, auth, OperationType, handleFirestoreError } from './firebase';
-import { UserProfile, CommunityPost, CommentItem, ChatMessage, PriceAlert, AdminReport, ReportItem, ChatRoomInfo } from '../types';
+import { UserProfile, UserRole, CommunityPost, CommentItem, ChatMessage, PriceAlert, AdminReport, ReportItem, ChatRoomInfo } from '../types';
 
 export const firebaseRepository = {
   // 1. Users
@@ -85,6 +86,120 @@ export const firebaseRepository = {
         commentCount: 86,
         winRate: 72.5,
       };
+    }
+  },
+
+  subscribeUsers(callback: (users: UserProfile[]) => void, onError?: (err: any) => void): () => void {
+    try {
+      const q = query(collection(db, 'users'), limit(300));
+      return onSnapshot(q, snap => {
+        const list: UserProfile[] = [];
+        let hasRootAdmin = false;
+        snap.forEach(d => {
+          const data = d.data();
+          const uid = d.id;
+          if (uid === 'lr018vf8CcW5fAv707vsl77qJy53' || data.email === 'byunghyunlim92@gmail.com') {
+            hasRootAdmin = true;
+          }
+          list.push({
+            id: uid,
+            email: data.email || '',
+            name: data.nickname || data.displayName || data.name || '회원',
+            avatar: data.photoURL || data.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80',
+            role: (uid === 'lr018vf8CcW5fAv707vsl77qJy53' || data.email === 'byunghyunlim92@gmail.com') ? 'superadmin' : (data.role || 'user'),
+            tier: data.tier || ((uid === 'lr018vf8CcW5fAv707vsl77qJy53') ? '최고 관리자' : '일반회원'),
+            joinedDate: data.createdAt ? new Date(data.createdAt).toLocaleDateString('ko-KR') : '2026.01.01',
+            createdAt: data.createdAt || new Date().toISOString(),
+            bio: data.bio || '',
+            postCount: data.postCount || 0,
+            commentCount: data.commentCount || 0,
+            status: data.status || 'active',
+            suspendedReason: data.suspendedReason,
+            chatRestricted: Boolean(data.chatRestricted),
+            chatMutedUntil: data.chatMutedUntil,
+            lastLoginAt: data.lastLoginAt ? new Date(data.lastLoginAt).toLocaleString('ko-KR') : undefined,
+            reportedCount: data.reportedCount || 0,
+            reportSubmitCount: data.reportSubmitCount || 0,
+          });
+        });
+        // Guarantee root superadmin presence
+        if (!hasRootAdmin) {
+          list.unshift({
+            id: 'lr018vf8CcW5fAv707vsl77qJy53',
+            name: '총괄관리자 (임병현)',
+            email: 'byunghyunlim92@gmail.com',
+            avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=120&auto=format&fit=crop&q=80',
+            role: 'superadmin',
+            tier: '최고 관리자',
+            joinedDate: '2026.01.01',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            bio: 'Stock Insight 총괄 시스템 관리자',
+            postCount: 0,
+            commentCount: 0,
+            status: 'active',
+            chatRestricted: false,
+            lastLoginAt: new Date().toLocaleString('ko-KR'),
+            reportedCount: 0,
+            reportSubmitCount: 0,
+          });
+        }
+        callback(list);
+      }, err => {
+        console.warn('[firebaseRepository] subscribeUsers onSnapshot error:', err);
+        if (onError) onError(err);
+      });
+    } catch (err) {
+      console.warn('[firebaseRepository] subscribeUsers exception:', err);
+      if (onError) onError(err);
+      return () => {};
+    }
+  },
+
+  async updateUserStatus(uid: string, status: 'active' | 'suspended', reason?: string): Promise<void> {
+    try {
+      const userRef = doc(db, 'users', uid);
+      await updateDoc(userRef, {
+        status,
+        suspendedReason: reason || null,
+        chatRestricted: status === 'suspended',
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn('[firebaseRepository] updateUserStatus error:', err);
+    }
+  },
+
+  async updateUserRole(uid: string, role: UserRole): Promise<void> {
+    try {
+      const userRef = doc(db, 'users', uid);
+      await updateDoc(userRef, {
+        role,
+        tier: role === 'superadmin' ? '최고 관리자' : (role === 'admin' ? '운영자' : (role === 'moderator' ? '운영진 (Moderator)' : '일반회원')),
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn('[firebaseRepository] updateUserRole error:', err);
+    }
+  },
+
+  async updateUserChatRestricted(uid: string, restricted: boolean, durationDesc?: string): Promise<void> {
+    try {
+      const userRef = doc(db, 'users', uid);
+      await updateDoc(userRef, {
+        chatRestricted: restricted,
+        chatMutedUntil: restricted ? (durationDesc || '1시간') : null,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.warn('[firebaseRepository] updateUserChatRestricted error:', err);
+    }
+  },
+
+  async deleteUser(uid: string): Promise<void> {
+    try {
+      await deleteDoc(doc(db, 'users', uid));
+    } catch (err) {
+      console.warn('[firebaseRepository] deleteUser error:', err);
     }
   },
 
@@ -269,6 +384,8 @@ export const firebaseRepository = {
               updatedAt: d.updatedAt,
               tags: d.tags || [],
               isHot: (d.likeCount || 0) >= 10,
+              status: d.status || 'published',
+              isNotice: Boolean(d.isNotice || d.category === 'notice'),
               comments: d.comments || [],
             });
           });
@@ -380,6 +497,21 @@ export const firebaseRepository = {
       await deleteDoc(doc(db, 'posts', postId));
     } catch (err) {
       console.warn('Firebase delete post failed:', err);
+    }
+  },
+
+  async updatePostStatus(postId: string, status: 'published' | 'hidden' | 'deleted'): Promise<void> {
+    try {
+      if (status === 'deleted') {
+        await deleteDoc(doc(db, 'posts', postId));
+      } else {
+        await updateDoc(doc(db, 'posts', postId), {
+          status,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    } catch (err) {
+      console.warn('Firebase updatePostStatus failed:', err);
     }
   },
 
@@ -499,6 +631,57 @@ export const firebaseRepository = {
     } catch (err) {
       console.warn('Firebase createReport failed:', err);
       return `rep-${Date.now()}`;
+    }
+  },
+
+  subscribeReports(callback: (reports: AdminReport[]) => void, onError?: (err: any) => void): () => void {
+    try {
+      const q = query(collection(db, 'reports'), limit(150));
+      return onSnapshot(q, snap => {
+        const list: AdminReport[] = [];
+        snap.forEach(d => {
+          const data = d.data();
+          list.push({
+            id: d.id,
+            type: data.type || data.targetType || 'post',
+            targetId: data.targetId || '',
+            targetTitle: data.targetTitle || data.targetContent?.slice(0, 30) || '신고 대상',
+            targetContent: data.targetContent || data.details || '',
+            targetAuthorId: data.targetAuthorId || '',
+            targetAuthorName: data.targetAuthorName || '사용자',
+            reporterId: data.reporterId || '',
+            reportedBy: data.reportedBy || data.reporterName || '익명회원',
+            reason: data.reason || '사유 미기재',
+            status: data.status || 'pending',
+            handlerName: data.handlerName || data.reviewedBy,
+            handledAt: data.handledAt || (data.reviewedAt ? new Date(data.reviewedAt).toLocaleString('ko-KR') : undefined),
+            actionTaken: data.actionTaken,
+            createdAt: data.createdAt ? (data.createdAt.length < 20 ? data.createdAt : new Date(data.createdAt).toLocaleString('ko-KR')) : '방금 전',
+          });
+        });
+        callback(list);
+      }, err => {
+        console.warn('[firebaseRepository] subscribeReports onSnapshot error:', err);
+        if (onError) onError(err);
+      });
+    } catch (err) {
+      console.warn('[firebaseRepository] subscribeReports exception:', err);
+      if (onError) onError(err);
+      return () => {};
+    }
+  },
+
+  async resolveReport(reportId: string, status: 'resolved' | 'dismissed', actionTaken?: string, reviewerName?: string): Promise<void> {
+    try {
+      const repRef = doc(db, 'reports', reportId);
+      await updateDoc(repRef, {
+        status,
+        actionTaken: actionTaken || (status === 'resolved' ? '운영 조치 완료' : '기각 처리'),
+        reviewedAt: new Date().toISOString(),
+        reviewedBy: reviewerName || '운영관리자',
+      });
+    } catch (err) {
+      console.warn('[firebaseRepository] resolveReport failed:', err);
     }
   },
 
@@ -626,6 +809,62 @@ export const firebaseRepository = {
       });
     } catch (err) {
       console.warn('subscribeChat exception:', err);
+      if (onError) onError(err);
+      return () => {};
+    }
+  },
+
+  subscribeAllChat(
+    callback: (messages: ChatMessage[]) => void,
+    messageLimit: number = 100,
+    onError?: (err: any) => void
+  ): () => void {
+    try {
+      const q = query(
+        collection(db, 'chatMessages'),
+        limit(messageLimit)
+      );
+      return onSnapshot(q, snap => {
+        const list: ChatMessage[] = [];
+        snap.forEach(docSnap => {
+          const d = docSnap.data();
+          let time = '12:00:00';
+          let sortTime = 0;
+          if (d.serverCreatedAt && typeof d.serverCreatedAt.toMillis === 'function') {
+            const date = d.serverCreatedAt.toDate();
+            time = date.toTimeString().split(' ')[0];
+            sortTime = d.serverCreatedAt.toMillis();
+          } else if (d.createdAt) {
+            const date = new Date(d.createdAt);
+            time = date.toTimeString().split(' ')[0];
+            sortTime = date.getTime();
+          }
+
+          list.push({
+            id: docSnap.id,
+            roomId: d.roomId || 'all',
+            author: {
+              id: d.authorId || '',
+              name: d.authorName || '투자자',
+              avatar: d.authorAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&auto=format&fit=crop&q=80',
+              role: d.authorRole,
+            },
+            message: d.content || '',
+            timestamp: time,
+            sentiment: d.sentiment,
+            likes: 0,
+            _sortTime: sortTime,
+          } as any);
+        });
+        // Sort newest first for admin monitoring
+        list.sort((a: any, b: any) => (b._sortTime || 0) - (a._sortTime || 0));
+        callback(list);
+      }, err => {
+        console.warn('Firestore subscribeAllChat error:', err);
+        if (onError) onError(err);
+      });
+    } catch (err) {
+      console.warn('subscribeAllChat exception:', err);
       if (onError) onError(err);
       return () => {};
     }

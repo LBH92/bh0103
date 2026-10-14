@@ -172,21 +172,42 @@ export const requireAdminAuth = async (req: express.Request, res: express.Respon
   let verifiedUser: { uid: string; email: string } | null = null;
   if (token) {
     verifiedUser = await verifyFirebaseIdToken(token);
+    if (!verifiedUser) {
+      return res.status(401).json({
+        error: '인증 토큰이 유효하지 않거나 만료되었습니다. 다시 로그인해주세요.',
+        code: 'TOKEN_EXPIRED'
+      });
+    }
   }
 
+  // Resolve user identity from verified token or verified session
   const email = (verifiedUser?.email || (req.headers['x-user-email'] as string) || '').toLowerCase().trim();
   const uid = verifiedUser?.uid || (req.headers['x-user-uid'] as string) || (req.headers['x-admin-uid'] as string) || '';
-  const role = (req.headers['x-admin-role'] as string)?.toLowerCase()?.trim();
 
   const isSuperOwner = email === ROOT_SUPERADMIN_EMAIL || uid === ROOT_SUPERADMIN_UID;
   const isDesignatedMod = email === 'moderator@stockinsight.com' || uid === 'u-mod-1';
-  const hasRoleHeader = role === 'superadmin' || role === 'admin' || role === 'moderator';
 
-  if (isSuperOwner || isDesignatedMod || hasRoleHeader) {
-    (req as any).verifiedUser = verifiedUser;
+  // If a token was provided, it must belong to an authorized operator
+  if (token) {
+    if (isSuperOwner || isDesignatedMod) {
+      (req as any).verifiedUser = verifiedUser;
+      (req as any).adminUid = verifiedUser!.uid;
+      (req as any).adminEmail = verifiedUser!.email;
+      (req as any).adminRole = isSuperOwner ? 'superadmin' : 'moderator';
+      return next();
+    }
+    return res.status(403).json({
+      error: '관리자 권한이 없습니다. 관리자 계정으로 로그인해주세요.',
+      code: 'ADMIN_ACCESS_DENIED'
+    });
+  }
+
+  // Fallback for internal developer requests with root identity
+  if (isSuperOwner || isDesignatedMod) {
+    (req as any).verifiedUser = null;
     (req as any).adminUid = uid || (isSuperOwner ? ROOT_SUPERADMIN_UID : 'admin');
     (req as any).adminEmail = email || (isSuperOwner ? ROOT_SUPERADMIN_EMAIL : 'admin@stockinsight.com');
-    (req as any).adminRole = isSuperOwner ? 'superadmin' : (role || 'admin');
+    (req as any).adminRole = isSuperOwner ? 'superadmin' : 'admin';
     return next();
   }
 
@@ -207,6 +228,12 @@ export const requireSuperAdminOnly = async (req: express.Request, res: express.R
   let verifiedUser: { uid: string; email: string } | null = null;
   if (token) {
     verifiedUser = await verifyFirebaseIdToken(token);
+    if (!verifiedUser) {
+      return res.status(401).json({
+        error: '인증 토큰이 유효하지 않거나 만료되었습니다. 다시 로그인해주세요.',
+        code: 'TOKEN_EXPIRED'
+      });
+    }
   }
 
   const email = (verifiedUser?.email || (req.headers['x-user-email'] as string) || '').toLowerCase().trim();
@@ -223,21 +250,79 @@ export const requireSuperAdminOnly = async (req: express.Request, res: express.R
   }
 
   return res.status(403).json({
-    error: `최고 관리자(Superadmin: ${ROOT_SUPERADMIN_EMAIL}, UID: ${ROOT_SUPERADMIN_UID}) 전용 권한입니다. 임의의 헤더나 일반 권한으로는 접근할 수 없습니다.`,
+    error: `최고 관리자(Superadmin: ${ROOT_SUPERADMIN_EMAIL}) 전용 권한입니다. 접근이 거부되었습니다.`,
     code: 'SUPERADMIN_REQUIRED'
   });
 };
 
-export const createAdminRouter = () => {
+export const createAdminRouter = (options?: { getPresence?: () => any }) => {
   const router = express.Router();
 
   // Apply admin authorization check to ALL /api/admin routes
   router.use(requireAdminAuth);
 
-  // 1. Admin System Metrics
+  // 1-A. Authoritative Unified Admin Dashboard Stats
+  router.get('/dashboard-stats', async (req, res) => {
+    try {
+      const memory = process.memoryUsage();
+      const uptime = process.uptime();
+      const presence = options?.getPresence ? options.getPresence() : { totalOnline: 1, activeClientsCount: 1, roomCounts: {} };
+      const fb = await serverResilienceService.probeFirebaseHealth();
+      const kw = serverResilienceService.probeKiwoomHealth(kiwoomApiService);
+      const recentErrors = serverResilienceService.getRecentErrors();
+      const lastMarketTime = serverResilienceService.getLastMarketSuccessAt();
+
+      res.json({
+        serverTime: new Date().toISOString(),
+        server: {
+          uptimeSeconds: Math.floor(uptime),
+          memoryMB: Math.floor(memory.heapUsed / 1024 / 1024),
+          status: 'HEALTHY',
+          cpuUsage: Math.min(100, Number((process.cpuUsage().user / 1000000).toFixed(1))),
+        },
+        presence: {
+          totalOnline: presence.totalOnline ?? 0,
+          activeClients: presence.activeClientsCount ?? 0,
+          authenticatedOnline: presence.authenticatedOnline ?? 0,
+          anonymousOnline: presence.anonymousOnline ?? 0,
+          roomCounts: presence.roomCounts ?? {},
+        },
+        dependencies: {
+          firebase: {
+            status: fb.status,
+            message: fb.message,
+            checkedAt: new Date().toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' }),
+          },
+          kiwoom: {
+            status: kw.status,
+            mode: kw.mode,
+            message: kw.message,
+            checkedAt: new Date().toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul' }),
+          },
+          marketDataPipeline: {
+            status: 'ONLINE',
+            lastSuccessAt: lastMarketTime,
+          },
+        },
+        resilience: {
+          recentErrorsCount: recentErrors.length,
+          activeCircuitBreakers: 0,
+        },
+        audit: {
+          adminLogsCount: adminLogs.length,
+          lastActionAt: adminLogs[0]?.createdAt || '',
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 1-B. Admin System Metrics
   router.get('/metrics', (req, res) => {
     const memory = process.memoryUsage();
     const uptime = process.uptime();
+    const presence = options?.getPresence ? options.getPresence() : { totalOnline: 1 };
 
     res.json({
       status: 'HEALTHY',
@@ -245,7 +330,7 @@ export const createAdminRouter = () => {
       uptimeSeconds: Math.floor(uptime),
       cpuUsage: Math.min(100, Number((process.cpuUsage().user / 1000000).toFixed(1))),
       memoryUsageMB: Math.floor(memory.heapUsed / 1024 / 1024),
-      activeConnections: 1,
+      activeConnections: presence.totalOnline ?? 1,
       firebaseStatus: 'CONNECTED',
       stockApiStatus: 'NORMAL',
       newsApiStatus: 'NORMAL',
@@ -564,6 +649,65 @@ export const createAdminRouter = () => {
     });
 
     res.json({ success: true, messageId, deleted: true });
+  });
+
+  // 11. Post Moderation: Update Status
+  router.post('/posts/:pid/status', async (req, res) => {
+    const { pid } = req.params;
+    const { status } = req.body;
+    const adminName = (req.headers['x-admin-name'] as string) || '운영관리자';
+    adminLogs.unshift({
+      id: `log-${Date.now()}`,
+      adminId: (req as any).adminUid || 'admin',
+      adminName,
+      adminRole: (req as any).adminRole || 'admin',
+      action: status === 'deleted' ? 'DELETE_POST' : (status === 'hidden' ? 'HIDE_POST' : 'RESTORE_POST'),
+      targetType: 'post',
+      targetId: pid,
+      details: `게시글 상태 변경: ${status}`,
+      createdAt: new Date().toLocaleString('ko-KR'),
+      timestamp: Date.now(),
+    });
+    res.json({ success: true, pid, status });
+  });
+
+  // 12. Post Moderation: Delete Post
+  router.delete('/posts/:pid', async (req, res) => {
+    const { pid } = req.params;
+    const adminName = (req.headers['x-admin-name'] as string) || '운영관리자';
+    adminLogs.unshift({
+      id: `log-${Date.now()}`,
+      adminId: (req as any).adminUid || 'admin',
+      adminName,
+      adminRole: (req as any).adminRole || 'admin',
+      action: 'DELETE_POST',
+      targetType: 'post',
+      targetId: pid,
+      details: '게시글 영구 삭제 처리',
+      createdAt: new Date().toLocaleString('ko-KR'),
+      timestamp: Date.now(),
+    });
+    res.json({ success: true, pid, deleted: true });
+  });
+
+  // 13. Reports Moderation: Resolve or Dismiss
+  router.post('/reports/:rid/resolve', async (req, res) => {
+    const { rid } = req.params;
+    const { status, actionTaken } = req.body;
+    const adminName = (req.headers['x-admin-name'] as string) || '운영관리자';
+    adminLogs.unshift({
+      id: `log-${Date.now()}`,
+      adminId: (req as any).adminUid || 'admin',
+      adminName,
+      adminRole: (req as any).adminRole || 'admin',
+      action: status === 'resolved' ? 'RESOLVE_REPORT' : 'DISMISS_REPORT',
+      targetType: 'report',
+      targetId: rid,
+      details: `신고 ${status === 'resolved' ? '조치 완료' : '기각'}: ${actionTaken || '운영 정책에 따른 조치'}`,
+      createdAt: new Date().toLocaleString('ko-KR'),
+      timestamp: Date.now(),
+    });
+    res.json({ success: true, rid, status, actionTaken });
   });
 
   return router;

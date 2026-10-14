@@ -1397,38 +1397,7 @@ export const INITIAL_USER: UserProfile = {
   winRate: 72.5,
 };
 
-export const INITIAL_ADMIN_REPORTS: AdminReport[] = [
-  {
-    id: 'rep-1',
-    type: 'post',
-    targetId: 'spam-post-99',
-    targetTitle: '선착순 10명 내일 상한가 종목 무료 텔레그램 링크 배포',
-    reportedBy: '클린투자가',
-    reason: '불법 리딩방 홍보 및 스팸 광고',
-    status: 'pending',
-    createdAt: '10분 전',
-  },
-  {
-    id: 'rep-2',
-    type: 'comment',
-    targetId: 'comment-88',
-    targetTitle: '너나 팔아라 깡통아 ㅋㅋㅋ',
-    reportedBy: '가치투자러',
-    reason: '욕설 및 인신공격',
-    status: 'pending',
-    createdAt: '35분 전',
-  },
-  {
-    id: 'rep-3',
-    type: 'post',
-    targetId: 'rumor-77',
-    targetTitle: '모 바이오 기업 내일 횡령 찌라시 떴다 도망쳐라',
-    reportedBy: '바이오승부사',
-    reason: '근거 없는 허위사실 유포로 인한 시세조종 의혹',
-    status: 'resolved',
-    createdAt: '2시간 전',
-  },
-];
+export const INITIAL_ADMIN_REPORTS: AdminReport[] = [];
 
 // Helper to generate dynamic order book
 export function generateOrderBook(stock: Stock) {

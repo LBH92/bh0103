@@ -17,13 +17,19 @@ import {
   ExternalLink
 } from 'lucide-react';
 import { adminService } from '../../../services/adminService';
-import { AdminSubTab, UserProfile, CommunityPost, AdminReport } from '../../../types';
+import { AdminSubTab, UserProfile, CommunityPost, AdminReport, ChatMessage } from '../../../types';
+import { RefreshCw } from 'lucide-react';
 
 interface AdminDashboardTabProps {
   onNavigateTab: (tab: AdminSubTab) => void;
   users: UserProfile[];
   posts: CommunityPost[];
   reports: AdminReport[];
+  chatMessages?: ChatMessage[];
+  serverStats?: any;
+  lastSyncTime?: string;
+  connectionStatus?: 'CONNECTED' | 'RECONNECTING' | 'ERROR';
+  onRefresh?: () => void;
 }
 
 export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
@@ -31,51 +37,130 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
   users,
   posts,
   reports,
+  chatMessages = [],
+  serverStats,
+  lastSyncTime,
+  connectionStatus = 'CONNECTED',
+  onRefresh,
 }) => {
-  const metrics = adminService.getDashboardMetrics();
+  const metrics = adminService.getDashboardMetrics({
+    users,
+    posts,
+    reports,
+    chatMessages,
+    serverStats,
+  });
 
   // Recent subsets
   const recentReports = reports.slice(0, 4);
   const recentUsers = users.slice(0, 4);
-  const recentPosts = posts.slice(0, 4);
+  const recentPosts = posts.filter(p => p.status !== 'deleted').slice(0, 4);
 
-  // Weekly Activity Trend Data
-  const trendDays = ['월', '화', '수', '목', '금', '토', '일'];
-  const signupTrend = [12, 18, 15, 24, 30, 42, 28];
-  const postTrend = [45, 62, 58, 80, 95, 110, 78];
-  const reportTrend = [2, 1, 4, 3, 7, 5, 2];
+  // Dynamic 7-day Activity Trend Data from real entities
+  const now = new Date();
+  const dayBuckets = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(now);
+    d.setDate(now.getDate() - (6 - i));
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return {
+      label: i === 6 ? '오늘' : i === 5 ? '어제' : `${d.getMonth() + 1}/${d.getDate()}`,
+      prefix1: `${y}.${m}.${day}`,
+      prefix2: `${y}-${m}-${day}`,
+    };
+  });
+
+  const trendDays = dayBuckets.map(b => b.label);
+
+  const signupTrend = dayBuckets.map(b => 
+    users.filter(u => {
+      const date = u.createdAt || u.joinedDate || '';
+      return date.includes(b.prefix1) || date.includes(b.prefix2);
+    }).length
+  );
+
+  const postTrend = dayBuckets.map(b => 
+    posts.filter(p => {
+      const date = p.createdAt || '';
+      return (date.includes(b.prefix1) || date.includes(b.prefix2)) && p.status !== 'deleted';
+    }).length
+  );
+
+  const reportTrend = dayBuckets.map(b => 
+    reports.filter(r => {
+      const date = r.createdAt || '';
+      return date.includes(b.prefix1) || date.includes(b.prefix2);
+    }).length
+  );
 
   return (
     <div className="space-y-6 animate-in fade-in duration-150">
       {/* 1. Header Banner */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 sm:p-6 bg-gradient-to-r from-slate-900 via-slate-800 to-indigo-950 text-white rounded-2xl shadow-sm border border-slate-700/60">
         <div>
-          <div className="flex items-center gap-2">
-            <span className="px-2 py-0.5 text-[11px] font-bold rounded-md bg-rose-500 text-white">
-              LIVE MONITOR
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`px-2 py-0.5 text-[11px] font-bold rounded-md flex items-center gap-1.5 border ${
+              connectionStatus === 'CONNECTED' 
+                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' 
+                : connectionStatus === 'RECONNECTING'
+                ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                : 'bg-rose-500/20 text-rose-300 border-rose-500/30'
+            }`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${
+                connectionStatus === 'CONNECTED' 
+                  ? 'bg-emerald-400 animate-pulse' 
+                  : connectionStatus === 'RECONNECTING' 
+                  ? 'bg-amber-400 animate-pulse' 
+                  : 'bg-rose-400'
+              }`} />
+              {connectionStatus === 'CONNECTED' 
+                ? '실시간 동기화 정상' 
+                : connectionStatus === 'RECONNECTING' 
+                ? '재연결 시도 중...' 
+                : '동기화 지연'}
             </span>
             <span className="text-xs text-slate-300 font-mono">
               실시간 증시 커뮤니티 통합 관제 센터
             </span>
+            {lastSyncTime && (
+              <span className="text-[11px] text-slate-400 font-mono hidden md:inline">
+                · 마지막 집계 시각: {lastSyncTime}
+              </span>
+            )}
           </div>
-          <h2 className="text-xl sm:text-2xl font-black mt-1.5 tracking-tight">
-            시스템 대시보드 및 운영 현황
+          <h2 className="text-xl sm:text-2xl font-black mt-1.5 tracking-tight flex items-center gap-3">
+            <span>시스템 대시보드 및 운영 현황</span>
+            {onRefresh && (
+              <button
+                onClick={onRefresh}
+                className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-slate-300 hover:text-white transition-colors cursor-pointer text-xs flex items-center gap-1 font-normal"
+                title="통계 즉시 동기화"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>새로고침</span>
+              </button>
+            )}
           </h2>
           <p className="text-xs sm:text-sm text-slate-300 mt-1 max-w-2xl leading-relaxed">
-            회원 활동, 게시글, 실시간 채팅, 이상 징후 및 외부 API 연결 상태를 실시간으로 모니터링합니다.
+            회원 활동, 게시글, 실시간 채팅, 이상 징후 및 외부 API 연결 상태를 실시간 데이터 원본을 기준으로 직접 검증하여 표시합니다.
           </p>
         </div>
 
         <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
           <div className="px-3.5 py-2 bg-white/10 backdrop-blur-md rounded-xl text-center border border-white/10">
-            <span className="text-[10px] text-slate-300 block">시스템 가동시간</span>
-            <span className="text-sm font-black font-mono text-emerald-400">99.98%</span>
+            <span className="text-[10px] text-slate-300 block">서버 가동시간</span>
+            <span className="text-sm font-black font-mono text-emerald-400">{metrics.uptime}</span>
           </div>
           <div className="px-3.5 py-2 bg-white/10 backdrop-blur-md rounded-xl text-center border border-white/10">
-            <span className="text-[10px] text-slate-300 block">전체 상태</span>
-            <span className="text-sm font-black text-emerald-400 flex items-center justify-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              정상
+            <span className="text-[10px] text-slate-300 block">시스템 상태</span>
+            <span className={`text-sm font-black flex items-center justify-center gap-1 ${
+              metrics.systemHealth === 'HEALTHY' ? 'text-emerald-400' : 'text-amber-400'
+            }`}>
+              <span className={`w-2 h-2 rounded-full ${
+                metrics.systemHealth === 'HEALTHY' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+              }`} />
+              {metrics.systemHealth === 'HEALTHY' ? '정상' : '주의'}
             </span>
           </div>
         </div>
@@ -89,7 +174,7 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
           className="p-4 sm:p-5 bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl hover:border-slate-300 dark:hover:border-slate-700 transition-all cursor-pointer shadow-xs group"
         >
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">전체 회원 수</span>
+            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">가입 회원 수</span>
             <div className="p-2 rounded-xl bg-blue-500/10 text-blue-500 group-hover:scale-110 transition-transform">
               <Users className="w-4 h-4" />
             </div>
@@ -100,7 +185,7 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
           </div>
           <div className="text-[11px] text-emerald-500 font-semibold mt-1 flex items-center gap-1">
             <TrendingUp className="w-3 h-3" />
-            <span>정상 계정 100% 보호 중</span>
+            <span>활성 {metrics.activeUsers}명 · 정지 {metrics.suspendedUsers}명</span>
           </div>
         </div>
 
@@ -120,27 +205,27 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
             <span className="text-xs font-normal text-slate-400 ml-1">명</span>
           </div>
           <div className="text-[11px] text-slate-400 mt-1">
-            기본 권한: <strong>user</strong> 자동 부여
+            당일 신규 활성 계정 기준
           </div>
         </div>
 
-        {/* Active Users */}
+        {/* Realtime Online Users (Server Authoritative Presence) */}
         <div 
-          onClick={() => onNavigateTab('users')}
+          onClick={() => onNavigateTab('market')}
           className="p-4 sm:p-5 bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl hover:border-slate-300 dark:hover:border-slate-700 transition-all cursor-pointer shadow-xs group"
         >
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">현재 활성 사용자</span>
+            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">현재 접속자 수</span>
             <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-500 group-hover:scale-110 transition-transform">
               <Activity className="w-4 h-4" />
             </div>
           </div>
           <div className="mt-2 text-2xl font-black font-mono text-slate-900 dark:text-white">
-            {metrics.activeUsers.toLocaleString()}
+            {metrics.currentOnlineUsers.toLocaleString()}
             <span className="text-xs font-normal text-slate-400 ml-1">명</span>
           </div>
-          <div className="text-[11px] text-rose-500 font-semibold mt-1">
-            정지 제재: {metrics.suspendedUsers}명
+          <div className="text-[11px] text-indigo-500 font-semibold mt-1">
+            실시간 프레즌스 하트비트 기준
           </div>
         </div>
 
@@ -160,7 +245,7 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
             <span className="text-xs font-normal text-slate-400 ml-1">개</span>
           </div>
           <div className="text-[11px] text-slate-400 mt-1">
-            오늘 등록: <strong>+{metrics.todayPosts}개</strong>
+            공개 <strong>{metrics.publishedPosts}</strong> · 숨김 <strong>{metrics.hiddenPosts}</strong> · 오늘 <strong>+{metrics.todayPosts}</strong>
           </div>
         </div>
 
@@ -204,23 +289,23 @@ export const AdminDashboardTab: React.FC<AdminDashboardTabProps> = ({
           </div>
         </div>
 
-        {/* Real-time Chat Users */}
+        {/* Real-time Chat Stats */}
         <div 
           onClick={() => onNavigateTab('chat')}
           className="p-4 sm:p-5 bg-white dark:bg-[#131722] border border-slate-200 dark:border-slate-800 rounded-2xl hover:border-slate-300 dark:hover:border-slate-700 transition-all cursor-pointer shadow-xs group"
         >
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">현재 채팅 사용자 수</span>
+            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">실시간 채팅 현황</span>
             <div className="p-2 rounded-xl bg-purple-500/10 text-purple-500 group-hover:scale-110 transition-transform">
               <MessagesSquare className="w-4 h-4" />
             </div>
           </div>
           <div className="mt-2 text-2xl font-black font-mono text-slate-900 dark:text-white">
-            {metrics.chatUsersCount.toLocaleString()}
-            <span className="text-xs font-normal text-slate-400 ml-1">명</span>
+            {metrics.chatMessagesCount.toLocaleString()}
+            <span className="text-xs font-normal text-slate-400 ml-1">건</span>
           </div>
-          <div className="text-[11px] text-emerald-500 font-semibold mt-1">
-            6개 채팅방 활성 가동
+          <div className="text-[11px] text-purple-500 font-semibold mt-1">
+            고유 참여 {metrics.chatParticipantsCount}명 · {metrics.activeChatRoomsCount}개 대화방
           </div>
         </div>
 

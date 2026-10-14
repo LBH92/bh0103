@@ -30,6 +30,7 @@ interface AdminUsersTabProps {
   onUnmute: (userId: string) => void;
   onWarn: (userId: string, message: string) => void;
   onChangeRole: (userId: string, newRole: UserRole) => void;
+  onDeleteUser?: (userId: string) => void;
 }
 
 export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
@@ -41,6 +42,7 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
   onUnmute,
   onWarn,
   onChangeRole,
+  onDeleteUser,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<'ALL' | 'active' | 'suspended' | 'muted' | 'admin' | 'moderator'>('ALL');
@@ -345,6 +347,23 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
                         <UserX className="w-3.5 h-3.5" />
                       </button>
                     )}
+                    {isSuperAdmin && u.role !== 'superadmin' && onDeleteUser && (
+                      <button
+                        onClick={() => {
+                          setConfirmModal({
+                            isOpen: true,
+                            title: '회원 영구 삭제',
+                            description: `정말로 '${u.name}' 회원의 계정과 모든 데이터를 영구 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.`,
+                            isDestructive: true,
+                            onConfirm: () => onDeleteUser(u.id),
+                          });
+                        }}
+                        className="p-1.5 rounded-lg bg-red-600/10 text-red-600 hover:bg-red-600/20 transition-colors"
+                        title="회원 삭제"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -418,6 +437,10 @@ export const AdminUsersTab: React.FC<AdminUsersTabProps> = ({
             onChangeRole(uid, newRole);
             setSelectedUser(null);
           }}
+          onDeleteUser={onDeleteUser ? (uid) => {
+            onDeleteUser(uid);
+            setSelectedUser(null);
+          } : undefined}
         />
       )}
 

@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useApp } from '../../context/AppContext';
 import { AdminSubTab, UserProfile, UserRole } from '../../types';
 import { adminService } from '../../services/adminService';
+import { firebaseRepository } from '../../services/firebaseRepository';
 import { AdminLayout } from './AdminLayout';
 import { AdminDashboardTab } from './tabs/AdminDashboardTab';
 import { AdminUsersTab } from './tabs/AdminUsersTab';
@@ -57,7 +58,7 @@ export const AdminView: React.FC = () => {
     window.history.pushState(null, '', '/');
   };
 
-  // 2. Data States
+  // 2. Authoritative Data States
   const [users, setUsers] = useState<UserProfile[]>(() => adminService.getUsers());
   const [posts, setPosts] = useState(() => adminService.getPosts());
   const [comments, setComments] = useState(() => adminService.getAllComments());
@@ -68,25 +69,126 @@ export const AdminView: React.FC = () => {
   const [notifications, setNotifications] = useState(() => adminService.getNotifications());
   const [logs, setLogs] = useState(() => adminService.getAdminLogs());
   const [settings, setSettings] = useState(() => adminService.getSettings());
+  const [serverStats, setServerStats] = useState<any>(null);
+  const [lastSyncTime, setLastSyncTime] = useState<string>(() => new Date().toLocaleTimeString('ko-KR'));
+  const [connectionStatus, setConnectionStatus] = useState<'CONNECTED' | 'RECONNECTING' | 'ERROR'>('CONNECTED');
 
-  // Real-time synchronization of admin reports and data
+  // Manual refresh callback
+  const handleManualRefresh = useCallback(async () => {
+    setConnectionStatus('RECONNECTING');
+    try {
+      const stats = await adminService.fetchDashboardStats();
+      if (stats) setServerStats(stats);
+      setLastSyncTime(new Date().toLocaleTimeString('ko-KR'));
+      setConnectionStatus('CONNECTED');
+      showToast('통계 및 서버 연결 상태를 최신 데이터로 동기화했습니다.', 'info');
+    } catch {
+      setConnectionStatus('ERROR');
+      showToast('서버 동기화 실패. 마지막 정상 데이터 상태를 유지합니다.', 'error');
+    }
+  }, [showToast]);
+
+  // Real-time synchronization of Firebase Firestore and Server Stats
   useEffect(() => {
-    const refreshData = () => {
-      setReports(adminService.getReports());
-      setUsers(adminService.getUsers());
-      setPosts(adminService.getPosts());
-      setComments(adminService.getAllComments());
-      setChatMessages(adminService.getChatMessages());
+    let isMounted = true;
+
+    // 1. Fetch server authoritative metrics & presence
+    const syncServerStats = async () => {
+      try {
+        const stats = await adminService.fetchDashboardStats();
+        if (isMounted && stats) {
+          setServerStats(stats);
+          setLastSyncTime(new Date().toLocaleTimeString('ko-KR'));
+          setConnectionStatus('CONNECTED');
+        }
+      } catch (e) {
+        if (isMounted) setConnectionStatus('ERROR');
+      }
+    };
+    syncServerStats();
+    const interval = setInterval(syncServerStats, 10000);
+
+    // 2. Real-time Firebase Firestore Users Subscription
+    const unsubUsers = firebaseRepository.subscribeUsers(
+      liveUsers => {
+        if (!isMounted) return;
+        setUsers(liveUsers);
+        adminService.saveUsers(liveUsers);
+        setLastSyncTime(new Date().toLocaleTimeString('ko-KR'));
+        setConnectionStatus('CONNECTED');
+      },
+      err => {
+        console.warn('[AdminView] users onSnapshot warning:', err);
+        if (isMounted) setConnectionStatus('ERROR');
+      }
+    );
+
+    // 3. Real-time Firebase Firestore Posts Subscription
+    const unsubPosts = firebaseRepository.subscribePosts(
+      livePosts => {
+        if (!isMounted) return;
+        setPosts(livePosts);
+        setComments(adminService.getAllComments(livePosts));
+        setLastSyncTime(new Date().toLocaleTimeString('ko-KR'));
+        setConnectionStatus('CONNECTED');
+      },
+      err => {
+        console.warn('[AdminView] posts onSnapshot warning:', err);
+        if (isMounted) setConnectionStatus('ERROR');
+      }
+    );
+
+    // 4. Real-time Firebase Firestore Reports Subscription
+    const unsubReports = firebaseRepository.subscribeReports(
+      liveReports => {
+        if (!isMounted) return;
+        setReports(liveReports);
+        adminService.saveReports(liveReports);
+        setLastSyncTime(new Date().toLocaleTimeString('ko-KR'));
+        setConnectionStatus('CONNECTED');
+      },
+      err => {
+        console.warn('[AdminView] reports onSnapshot warning:', err);
+        if (isMounted) setConnectionStatus('ERROR');
+      }
+    );
+
+    // 5. Real-time Firebase Firestore Chat Messages Subscription
+    const unsubChat = firebaseRepository.subscribeAllChat(
+      liveChat => {
+        if (!isMounted) return;
+        setChatMessages(liveChat);
+        setLastSyncTime(new Date().toLocaleTimeString('ko-KR'));
+        setConnectionStatus('CONNECTED');
+      },
+      100,
+      err => {
+        console.warn('[AdminView] chat onSnapshot warning:', err);
+        if (isMounted) setConnectionStatus('ERROR');
+      }
+    );
+
+    const refreshLocalState = () => {
+      setNotices(adminService.getNotices());
+      setBannedWords(adminService.getBannedWords());
       setLogs(adminService.getAdminLogs());
+      setSettings(adminService.getSettings());
     };
-    refreshData();
-    window.addEventListener('storage', refreshData);
-    window.addEventListener('focus', refreshData);
+    refreshLocalState();
+    window.addEventListener('storage', refreshLocalState);
+    window.addEventListener('focus', syncServerStats);
+
     return () => {
-      window.removeEventListener('storage', refreshData);
-      window.removeEventListener('focus', refreshData);
+      isMounted = false;
+      clearInterval(interval);
+      unsubUsers();
+      unsubPosts();
+      unsubReports();
+      unsubChat();
+      window.removeEventListener('storage', refreshLocalState);
+      window.removeEventListener('focus', syncServerStats);
     };
-  }, [activeSubTab]);
+  }, []);
 
   // 3. Strict Role-based Access Gate
   // Only moderator, admin, or superadmin can enter
@@ -117,6 +219,11 @@ export const AdminView: React.FC = () => {
             users={users}
             posts={posts}
             reports={reports}
+            chatMessages={chatMessages}
+            serverStats={serverStats}
+            lastSyncTime={lastSyncTime}
+            connectionStatus={connectionStatus}
+            onRefresh={handleManualRefresh}
           />
         );
 
@@ -125,40 +232,59 @@ export const AdminView: React.FC = () => {
           <AdminUsersTab
             users={users}
             callerRole={user.role}
-            onSuspend={(uid, reason) => {
-              adminService.suspendUser(uid, reason, callerProfile);
-              setUsers(adminService.getUsers());
+            onSuspend={async (uid, reason) => {
+              const res = await adminService.suspendUser(uid, reason, callerProfile);
+              if (res.success) {
+                showToast(res.message, 'info');
+              } else {
+                showToast(res.message, 'error');
+              }
               setLogs(adminService.getAdminLogs());
-              showToast('사용자가 정지 처리되었습니다.', 'info');
             }}
-            onUnsuspend={uid => {
-              adminService.unsuspendUser(uid, callerProfile);
-              setUsers(adminService.getUsers());
+            onUnsuspend={async uid => {
+              const res = await adminService.unsuspendUser(uid, callerProfile);
+              if (res.success) {
+                showToast(res.message, 'success');
+              } else {
+                showToast(res.message, 'error');
+              }
               setLogs(adminService.getAdminLogs());
-              showToast('사용자 정지가 해제되었습니다.', 'success');
             }}
-            onMute={(uid, dur) => {
-              adminService.muteUser(uid, dur, callerProfile);
-              setUsers(adminService.getUsers());
+            onMute={async (uid, dur) => {
+              const res = await adminService.muteUser(uid, dur, callerProfile);
+              if (res.success) {
+                showToast(res.message, 'info');
+              } else {
+                showToast(res.message, 'error');
+              }
               setLogs(adminService.getAdminLogs());
-              showToast('사용자 채팅이 제한되었습니다.', 'info');
             }}
-            onUnmute={uid => {
-              adminService.unmuteUser(uid, callerProfile);
-              setUsers(adminService.getUsers());
+            onUnmute={async uid => {
+              const res = await adminService.unmuteUser(uid, callerProfile);
+              if (res.success) {
+                showToast(res.message, 'success');
+              } else {
+                showToast(res.message, 'error');
+              }
               setLogs(adminService.getAdminLogs());
-              showToast('채팅 제한이 해제되었습니다.', 'success');
             }}
             onWarn={(uid, msg) => {
               adminService.warnUser(uid, msg, callerProfile);
-              setUsers(adminService.getUsers());
               setLogs(adminService.getAdminLogs());
               showToast('경고 알림이 전송되었습니다.', 'info');
             }}
             onChangeRole={async (uid, newRole) => {
               const res = await adminService.changeUserRole(uid, newRole, user.role, callerProfile);
               if (res.success) {
-                setUsers(adminService.getUsers());
+                setLogs(adminService.getAdminLogs());
+                showToast(res.message, 'success');
+              } else {
+                showToast(res.message, 'error');
+              }
+            }}
+            onDeleteUser={async uid => {
+              const res = await adminService.deleteUser(uid, callerProfile);
+              if (res.success) {
                 setLogs(adminService.getAdminLogs());
                 showToast(res.message, 'success');
               } else {
@@ -173,15 +299,13 @@ export const AdminView: React.FC = () => {
           <AdminPostsTab
             posts={posts}
             callerRole={user.role}
-            onUpdateStatus={(pid, status) => {
-              adminService.updatePostStatus(pid, status, callerProfile);
-              setPosts(adminService.getPosts());
+            onUpdateStatus={async (pid, status) => {
+              await adminService.updatePostStatus(pid, status, callerProfile);
               setLogs(adminService.getAdminLogs());
               showToast(`게시글이 '${status}' 처리되었습니다.`, 'info');
             }}
-            onToggleNotice={(pid, isNotice) => {
-              adminService.toggleNoticePost(pid, isNotice, callerProfile);
-              setPosts(adminService.getPosts());
+            onToggleNotice={async (pid, isNotice) => {
+              await adminService.toggleNoticePost(pid, isNotice, callerProfile);
               setLogs(adminService.getAdminLogs());
               showToast(isNotice ? '공지글로 지정되었습니다.' : '공지 지정이 해제되었습니다.', 'info');
             }}

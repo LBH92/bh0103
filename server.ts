@@ -1792,13 +1792,14 @@ async function startServer() {
       roomCounts[rid] = (roomCounts[rid] || 0) + 1;
     }
 
-    // Baseline active community members connected to live trading ticker
-    const liveSessionCount = Math.max(presenceClients.size, 1);
-    const totalOnline = liveSessionCount;
+    const authenticatedCount = Array.from(presenceClients.values()).filter(c => Boolean(c.uid)).length;
+    const anonymousCount = Array.from(presenceClients.values()).filter(c => !c.uid).length;
 
     return {
-      totalOnline,
+      totalOnline: presenceClients.size,
       activeClientsCount: presenceClients.size,
+      authenticatedOnline: authenticatedCount,
+      anonymousOnline: anonymousCount,
       roomCounts,
     };
   }
@@ -1830,7 +1831,7 @@ async function startServer() {
   // -------------------------------------------------------------
   // 11. Admin Dedicated API Router (Secured by Admin RBAC)
   // -------------------------------------------------------------
-  app.use('/api/admin', createAdminRouter());
+  app.use('/api/admin', createAdminRouter({ getPresence: pruneAndCalculatePresence }));
 
   // 12. Catch-all 404 for unmatched API routes
   app.all('/api/*', (req, res) => {
